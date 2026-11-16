@@ -374,7 +374,7 @@ const MapView = {
 
         // 玩家位置标记
         if (this.game.playerCountry) {
-            const pc = this.game.playerCountry;
+            const pc = this.game.playerCountry();
             for (const pid of pc.provinces) {
                 const p = this.game.provinceById(pid);
                 if (p) ctx.fillStyle = '#fff';
