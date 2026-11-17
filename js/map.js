@@ -23,10 +23,14 @@ const MapView = {
     hoverProvince: null,
     selectedProvince: null,
     isDragging: false,
+    isPinching: false,
     dragStartX: 0,
     dragStartY: 0,
     lastMouseX: 0,
     lastMouseY: 0,
+    pinchStartDist: 0,
+    pinchStartScale: 1,
+    pinchMid: { x: 0, y: 0 },
 
     // 缓存：省份多边形顶点（屏幕坐标）
     provinceScreenCache: {},
@@ -88,12 +92,21 @@ const MapView = {
         c.addEventListener('mouseleave', () => { this.hoverProvince = null; this.hideTooltip(); });
         c.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
         c.addEventListener('dblclick', (e) => this.onDoubleClick(e));
+        // 触摸事件（移动端平移 + 捏合缩放）
+        c.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
+        c.addEventListener('touchmove', (e) => this.onTouchMove(e), { passive: false });
+        c.addEventListener('touchend', (e) => this.onTouchEnd(e));
+        c.addEventListener('touchcancel', (e) => this.onTouchEnd(e));
         window.addEventListener('resize', () => this.resize());
     },
 
-    getMousePos(e) {
+    getPos(clientX, clientY) {
         const rect = this.canvas.getBoundingClientRect();
-        return { x: e.clientX - rect.left, y: e.clientY - rect.top };
+        return { x: clientX - rect.left, y: clientY - rect.top };
+    },
+
+    getMousePos(e) {
+        return this.getPos(e.clientX, e.clientY);
     },
 
     onMouseDown(e) {
@@ -152,6 +165,137 @@ const MapView = {
                 }
             }
         }
+    },
+
+    /* ---------- 触摸事件（移动端） ---------- */
+    onTouchStart(e) {
+        e.preventDefault();
+        const touches = e.touches;
+        if (touches.length === 1) {
+            // 单指：开始拖动平移
+            const t = touches[0];
+            this.isDragging = true;
+            this.dragStartX = t.clientX;
+            this.dragStartY = t.clientY;
+            this.lastMouseX = t.clientX;
+            this.lastMouseY = t.clientY;
+            this.canvas.style.cursor = 'grabbing';
+        } else if (touches.length === 2) {
+            // 双指：开始捏合缩放
+            this.isPinching = true;
+            this.isDragging = false;
+            const dist = this.touchDistance(touches);
+            this.pinchStartDist = dist;
+            this.pinchStartScale = this.scale;
+            const mid = this.touchMidpoint(touches);
+            this.pinchMid = this.getPos(mid.x, mid.y);
+        }
+    },
+
+    onTouchMove(e) {
+        e.preventDefault();
+        const touches = e.touches;
+        if (this.isPinching && touches.length === 2) {
+            // 双指捏合缩放
+            const dist = this.touchDistance(touches);
+            const factor = dist / this.pinchStartDist;
+            const newScale = Math.max(0.5, Math.min(8, this.pinchStartScale * factor));
+            // 保持捏合中点位置不变
+            const mid = this.touchMidpoint(touches);
+            const midPos = this.getPos(mid.x, mid.y);
+            const worldBefore = this.screenToWorld(this.pinchMid.x, this.pinchMid.y);
+            this.scale = newScale;
+            this.offsetX = midPos.x - worldBefore.x * newScale;
+            this.offsetY = midPos.y - worldBefore.y * newScale;
+            this.targetScale = this.scale;
+            this.targetOffsetX = this.offsetX;
+            this.targetOffsetY = this.offsetY;
+            this.draw();
+            return;
+        }
+        if (touches.length === 1 && this.isDragging) {
+            // 单指拖动平移
+            const t = touches[0];
+            const dx = t.clientX - this.lastMouseX;
+            const dy = t.clientY - this.lastMouseY;
+            this.offsetX += dx;
+            this.offsetY += dy;
+            this.targetOffsetX = this.offsetX;
+            this.targetOffsetY = this.offsetY;
+            this.lastMouseX = t.clientX;
+            this.lastMouseY = t.clientY;
+            this.draw();
+            return;
+        }
+        // 触摸悬停检测
+        if (touches.length === 1) {
+            const t = touches[0];
+            const pos = this.getPos(t.clientX, t.clientY);
+            const world = this.screenToWorld(pos.x, pos.y);
+            const prov = this.findProvinceAt(world.x, world.y);
+            this.hoverProvince = prov;
+            if (prov) {
+                this.showTooltip(prov, pos);
+                if (this.game.selectedProvince !== prov.id) {
+                    this.game.selectProvince(prov.id);
+                }
+            } else {
+                this.hideTooltip();
+            }
+        }
+    },
+
+    onTouchEnd(e) {
+        if (this.isPinching) {
+            // 捏合结束：若仍有手指，转为拖动
+            if (e.touches.length === 1) {
+                const t = e.touches[0];
+                this.isPinching = false;
+                this.isDragging = true;
+                this.dragStartX = t.clientX;
+                this.dragStartY = t.clientY;
+                this.lastMouseX = t.clientX;
+                this.lastMouseY = t.clientY;
+            } else {
+                this.isPinching = false;
+            }
+            return;
+        }
+        if (this.isDragging) {
+            let clientX, clientY;
+            if (e.changedTouches.length > 0) {
+                clientX = e.changedTouches[0].clientX;
+                clientY = e.changedTouches[0].clientY;
+            } else {
+                clientX = this.lastMouseX;
+                clientY = this.lastMouseY;
+            }
+            const moved = Math.abs(clientX - this.dragStartX) + Math.abs(clientY - this.dragStartY);
+            this.isDragging = false;
+            this.canvas.style.cursor = 'grab';
+            // 轻触视为点击选择省份
+            if (moved < 8) {
+                const pos = this.getPos(clientX, clientY);
+                const world = this.screenToWorld(pos.x, pos.y);
+                const prov = this.findProvinceAt(world.x, world.y);
+                if (prov) {
+                    this.game.selectProvince(prov.id);
+                } else {
+                    this.game.selectProvince(null);
+                }
+            }
+        }
+    },
+
+    // 两指之间的距离
+    touchDistance(touches) {
+        const a = touches[0], b = touches[1];
+        return Math.hypot(a.clientX - b.clientX, a.clientY - b.clientY);
+    },
+    // 两指的中点（屏幕坐标）
+    touchMidpoint(touches) {
+        const a = touches[0], b = touches[1];
+        return { x: (a.clientX + b.clientX) / 2, y: (a.clientY + b.clientY) / 2 };
     },
 
     onWheel(e) {
