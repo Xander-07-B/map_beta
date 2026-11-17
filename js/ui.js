@@ -8,10 +8,63 @@ const UI = {
 
     init(game) {
         this.game = game;
-        this.bindPanelTabs();
+        this.bindIconRail();
         this.bindMapTools();
         this.bindTopBar();
         this.bindModal();
+        this.bindPanelModal();
+    },
+
+    // ===================== 面板弹窗开关 =====================
+    panelTitles: {
+        overview: '总览', politics: '政治', economy: '经济',
+        production: '生产', tech: '科技', diplomacy: '外交',
+        intelligence: '情报', log: '日志'
+    },
+
+    openPanel(panel) {
+        this.currentPanel = panel;
+        // 更新图标栏高亮
+        document.querySelectorAll('.rail-btn').forEach(b => {
+            b.classList.toggle('active', b.dataset.panel === panel);
+        });
+        // 设置标题并渲染
+        document.getElementById('panelModalTitle').textContent = this.panelTitles[panel] || panel;
+        this.renderPanel(panel);
+        // 显示弹窗
+        document.getElementById('panelModal').classList.remove('hidden');
+        document.getElementById('panelModalBackdrop').classList.remove('hidden');
+        // 触发动画
+        requestAnimationFrame(() => {
+            document.getElementById('panelModal').classList.add('open');
+            document.getElementById('panelModalBackdrop').classList.add('show');
+        });
+    },
+
+    closePanel() {
+        const pm = document.getElementById('panelModal');
+        const bd = document.getElementById('panelModalBackdrop');
+        pm.classList.remove('open');
+        bd.classList.remove('show');
+        setTimeout(() => {
+            pm.classList.add('hidden');
+            bd.classList.add('hidden');
+        }, 280);
+    },
+
+    bindPanelModal() {
+        document.getElementById('panelModalClose').addEventListener('click', () => this.closePanel());
+        document.getElementById('panelModalBackdrop').addEventListener('click', () => this.closePanel());
+    },
+
+    // ===================== 图标栏绑定 =====================
+    bindIconRail() {
+        const btns = document.querySelectorAll('.rail-btn');
+        btns.forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.openPanel(btn.dataset.panel);
+            });
+        });
     },
 
     // ===================== 主刷新 =====================
@@ -60,16 +113,16 @@ const UI = {
         const mpBox = document.getElementById('statManpower');
         const mpPct = Math.round((c.manpower / c.maxManpower) * 100);
         mpBox.innerHTML = `<div class="stat-item">
-            <span class="stat-label">👥 人力</span>
+            <span class="stat-label">⊕ 人力</span>
             <span class="stat-value">${Math.round(c.manpower)} / ${c.maxManpower}</span>
             <div class="stat-bar"><div class="stat-bar-fill" style="width:${mpPct}%;background:var(--blue)"></div></div>
         </div>
         <div class="stat-item">
-            <span class="stat-label">🎖 战争支持</span>
+            <span class="stat-label">▲ 战争支持</span>
             <span class="stat-value ${c.warSupport > 50 ? 'pos' : 'warn'}">${Math.round(c.warSupport)}%</span>
         </div>
         <div class="stat-item">
-            <span class="stat-label">📈 稳定度</span>
+            <span class="stat-label">◆ 稳定度</span>
             <span class="stat-value ${c.stability > 50 ? 'pos' : 'warn'}">${Math.round(c.stability)}%</span>
         </div>`;
 
@@ -77,15 +130,15 @@ const UI = {
         const indBox = document.getElementById('statIndustry');
         const f = this.game.factories[cid];
         indBox.innerHTML = `<div class="stat-item">
-            <span class="stat-label">🏭 民用工厂</span>
+            <span class="stat-label">⬢ 民用工厂</span>
             <span class="stat-value">${Math.round(f.civilian)}</span>
         </div>
         <div class="stat-item">
-            <span class="stat-label">⚒ 军用工厂</span>
+            <span class="stat-label">⬡ 军用工厂</span>
             <span class="stat-value">${Math.round(f.military)}</span>
         </div>
         <div class="stat-item">
-            <span class="stat-label">🏗 建造</span>
+            <span class="stat-label">▢ 建造</span>
             <span class="stat-value">${Math.round(f.construction)}</span>
         </div>`;
 
@@ -95,30 +148,17 @@ const UI = {
         const totalStrength = myArmies.reduce((s, a) => s + a.strength, 0);
         const war = this.game.isWarFor(cid);
         milBox.innerHTML = `<div class="stat-item">
-            <span class="stat-label">⚔ 军队数</span>
+            <span class="stat-label">✕ 军队数</span>
             <span class="stat-value">${myArmies.length}</span>
         </div>
         <div class="stat-item">
-            <span class="stat-label">💥 总战力</span>
+            <span class="stat-label">◎ 总战力</span>
             <span class="stat-value">${Math.round(totalStrength)}</span>
         </div>
         <div class="stat-item">
-            <span class="stat-label">${war ? '🔴 战争中' : '🟢 和平'}</span>
+            <span class="stat-label">${war ? '● 战争中' : '○ 和平'}</span>
             <span class="stat-value ${war ? 'neg' : 'pos'}">${war ? '是' : '否'}</span>
         </div>`;
-    },
-
-    // ===================== 面板切换 =====================
-    bindPanelTabs() {
-        const tabs = document.querySelectorAll('.panel-tab');
-        tabs.forEach(tab => {
-            tab.addEventListener('click', () => {
-                document.querySelectorAll('.panel-tab').forEach(t => t.classList.remove('active'));
-                tab.classList.add('active');
-                this.currentPanel = tab.dataset.panel;
-                this.renderPanel(this.currentPanel);
-            });
-        });
     },
 
     bindMapTools() {
@@ -204,7 +244,7 @@ const UI = {
             <div class="panel-row"><span class="pr-label">日期</span><span class="pr-value">${this.game.formatDate()}</span></div>
             <div class="panel-row"><span class="pr-label">省份数</span><span class="pr-value">${provinces.length}</span></div>
             <div class="panel-row"><span class="pr-label">军队数</span><span class="pr-value">${myArmies.length}</span></div>
-            <div class="panel-row"><span class="pr-label">战争状态</span><span class="pr-value ${this.game.isWarFor(this.game.playerCountryId) ? 'neg' : 'pos'}">${this.game.isWarFor(this.game.playerCountryId) ? '🔴 交战中' : '🟢 和平'}</span></div>
+            <div class="panel-row"><span class="pr-label">战争状态</span><span class="pr-value ${this.game.isWarFor(this.game.playerCountryId) ? 'neg' : 'pos'}">${this.game.isWarFor(this.game.playerCountryId) ? '● 交战中' : '○ 和平'}</span></div>
         </div>
         <div class="panel-section">
             <h4>工业</h4>
@@ -310,7 +350,7 @@ const UI = {
             ${queue.map((item, i) => {
                 const eq = EQUIPMENT[item.equipment];
                 return `<div class="prod-row">
-                    <span class="prod-icon">${eq ? eq.icon : '📦'}</span>
+                    <span class="prod-icon">${eq ? eq.icon : '▢'}</span>
                     <span class="prod-name">${eq ? eq.name : item.equipment} <span style="color:var(--text-dim);font-size:11px">(优先${item.priority})</span></span>
                     <span class="prod-amount">${item.amount.toFixed(1)}</span>
                     <button class="btn-action" data-prod-remove="${i}" style="padding:2px 8px;margin:0">✕</button>
@@ -382,7 +422,7 @@ const UI = {
                 const isAlly = c.alliances.includes(oid);
                 const cls = rel > 30 ? 'pos' : (rel < -30 ? 'neg' : '');
                 return `<div class="diplo-card">
-                    <div class="dc-name">${other.flag} ${other.name} ${isAlly ? '🤝' : ''}</div>
+                    <div class="dc-name">${other.flag} ${other.name} ${isAlly ? '☥' : ''}</div>
                     <div class="dc-rel ${cls}">关系: ${Math.round(rel)} ${rel > 0 ? '↑' : '↓'}</div>
                     <div style="margin-top:6px">
                         ${rel > 50 ? `<button class="btn-action" data-diplo="alliance" data-target="${oid}">结盟</button>` : ''}
