@@ -156,10 +156,10 @@ const UI = {
     },
 
     bindModal() {
-        // 模态按钮动态生成，事件通过 delegate
+        // 事件委托：按钮使用 _action 自定义属性，避免与 onclick 属性重复触发
         document.getElementById('modalButtons').addEventListener('click', (e) => {
             const btn = e.target.closest('.modal-btn');
-            if (btn && btn.onclick) btn.onclick();
+            if (btn && btn._action) btn._action();
         });
     },
 
@@ -491,7 +491,7 @@ const UI = {
             const btn = document.createElement('button');
             btn.className = 'modal-btn' + (b.cls ? ' ' + b.cls : '');
             btn.textContent = b.text;
-            btn.onclick = b.action;
+            btn._action = b.action;
             btnBox.appendChild(btn);
         });
         document.getElementById('modal').classList.remove('hidden');
@@ -499,6 +499,51 @@ const UI = {
 
     closeModal() {
         document.getElementById('modal').classList.add('hidden');
+    },
+
+    // ===================== 国家焦点弹窗 =====================
+    showFocusPopup(focus) {
+        const cid = this.game.playerCountryId;
+        const f = this.game.focuses[cid];
+        const done = f && f.done.includes(focus.id);
+        const available = f && focus.requires.every(r => f.done.includes(r)) && !done;
+
+        const reqText = focus.requires.length > 0
+            ? `<p style="color:var(--text-dim);font-size:12px;margin-top:8px">前置焦点：${focus.requires.map(r => (FOCUSES.find(x => x.id === r) || {}).name || r).join('、')}</p>`
+            : '<p style="color:var(--text-dim);font-size:12px;margin-top:8px">无前置要求，可直接执行</p>';
+
+        const body = `
+            <div style="text-align:center;margin-bottom:15px">
+                <div style="font-size:42px;line-height:1">${focus.icon}</div>
+                <h3 style="color:var(--accent);margin:12px 0 4px">${focus.name}</h3>
+            </div>
+            <p style="line-height:1.7;margin-bottom:10px"><b>效果：</b>${focus.effect}</p>
+            ${reqText}
+            ${done ? '<p style="color:var(--green);font-size:13px">✓ 该焦点已完成</p>' : ''}
+        `;
+
+        const buttons = [
+            { text: '取消', action: () => this.closeModal() },
+        ];
+        if (available && !done) {
+            buttons.push({
+                text: '执行焦点', cls: 'primary',
+                action: () => {
+                    const result = this.game.startFocus(cid, focus.id);
+                    this.closeModal();
+                    if (!result) {
+                        this.showModal('提示', '<p>该焦点无法执行。</p>', [
+                            { text: '确定', cls: 'primary', action: () => this.closeModal() }
+                        ]);
+                    }
+                    this.refreshAll();
+                }
+            });
+        } else if (done) {
+            // 已完成的焦点只显示关闭按钮
+        }
+
+        this.showModal(focus.name, body, buttons);
     },
 
     // ===================== 事件弹窗 =====================
@@ -519,11 +564,12 @@ const UI = {
 
     // ===================== 面板交互绑定 =====================
     bindPanelActions(panel) {
-        // 焦点
+        // 焦点 - 弹出详情弹窗
         document.querySelectorAll('[data-focus]').forEach(el => {
             el.addEventListener('click', () => {
-                this.game.startFocus(this.game.playerCountryId, el.dataset.focus);
-                this.refreshAll();
+                const focusId = el.dataset.focus;
+                const focus = FOCUSES.find(f => f.id === focusId);
+                if (focus) this.showFocusPopup(focus);
             });
         });
         // 生产

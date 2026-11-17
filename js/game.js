@@ -802,6 +802,9 @@ const Game = {
         }
         this.logMsg(`事件【${evt.title}】：${choice ? choice.text : ''}`);
         this.activeEvent = null;
+        // 关闭事件弹窗覆盖层
+        const overlay = document.getElementById('eventOverlay');
+        if (overlay) overlay.classList.add('hidden');
         if (UI) UI.refreshAll();
     },
 
