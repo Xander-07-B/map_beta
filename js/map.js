@@ -28,8 +28,7 @@ const MapView = {
     paths: null,          // Map<ne_id, Path2D>  指向 provL1（拾取/军队/高亮用）
     bbox: null,           // Map<ne_id, [x0,y0,x1,y1]>  指向 provL1
     seqIndex: null,       // Map<ne_id, number>  顺序索引（拾取用）
-    countryBorderPath: null, // 国界 mesh 的 Path2D
-    coastChunks: null,       // 海岸线分块 [{path,bbox}]，按 LOD 与视口裁剪
+    lineTiles: null,         // 线要素网格：国界/省界/海岸线按 512px 网格合并，只描边视口内的格子
     landBasePath: null,      // 合并陆地底色（仅国家级 LOD 兜底）
     worldBounds: [0, 0, 0, 0], // 投影后世界范围
 
@@ -37,8 +36,8 @@ const MapView = {
     oceanColor: '#0b2545',
     landColor: '#2f3b33',    // 无归属省份的陆地底色（保证任何缩放都有颜色）
 
-    // === 填充分组缓存（按国家颜色合并路径，大幅减少 fill 调用）===
-    _fillCaches: {},         // layerKey -> { version, groups: [{color,path,bbox}] }
+    // === 填充缓存（颜色 × 空间网格，只绘制视口覆盖的格子）===
+    _fillCaches: {},         // layerKey -> { version, cells, cols, rows, ... }
     _ownerVersion: 0,
     _drawPending: false,
     _miniCache: null,        // 小地图离屏缓存
@@ -47,7 +46,7 @@ const MapView = {
     grid: { cols: 0, rows: 0, cells: {} },
 
     // === 前线索引 ===
-    borderIndex: null,    // Map<"isoA|isoB", number[][][]>
+    borderIndex: null,    // Map<"isoA|isoB", {path: Path2D, bbox}>
 
     // === 相机（屏幕 = 世界 * scale + offset）===
     scale: 1, offsetX: 0, offsetY: 0,
@@ -97,7 +96,7 @@ const MapView = {
         this.index = idxRes;
         this.buildLayers();
         this.buildPicker();
-        this.buildCountryBorders();
+        this.buildLineTiles();
         this.buildBorderIndex();
         this.ready = true;
         // 把省份元数据交给游戏逻辑
@@ -171,17 +170,34 @@ const MapView = {
         for (const p of this.layers.country.paths.values()) land.addPath(p);
         this.landBasePath = land;
 
-        // 海岸线：外部弧段（a === b 即只被一个要素使用），按线段分块缓存以便视口裁剪
-        this.coastChunks = {
-            l0: this.buildCoastChunks(this.topoL0, objNameL0),
-            l1: this.buildCoastChunks(this.topo, objName),
+    },
+
+    // 把所有线要素（国界/省界/海岸线）按网格合并成 tile：每帧只描边视口内的少数 tile
+    buildLineTiles() {
+        const p0 = Object.keys(this.topoL0.objects).find(k => this.topoL0.objects[k].type === 'GeometryCollection');
+        const p1 = this.provinceObjName();
+        const c = this.countryObjName();
+        this.lineTiles = {
+            // 国家级：内部国界与海岸线分开，避免同一条线被描边两次
+            country: this.buildMeshTiles(this.countriesTopo, c, (a, b) => a !== b),
+            coastCountry: this.buildMeshTiles(this.countriesTopo, c, (a, b) => a === b),
+            provL0: this.buildMeshTiles(this.topoL0, p0, (a, b) => a !== b),
+            provL1: this.buildMeshTiles(this.topo, p1, (a, b) => a !== b),
+            coastL0: this.buildMeshTiles(this.topoL0, p0, (a, b) => a === b),
+            coastL1: this.buildMeshTiles(this.topo, p1, (a, b) => a === b),
         };
     },
 
-    // 把海岸线拆成带 bbox 的路径块，绘制时只描边视野内的块
-    buildCoastChunks(topo, objName) {
-        const mesh = topojson.meshArcs(topo, topo.objects[objName], (a, b) => a === b);
+    // 将 meshArcs 折线投影后按空间网格合并为 Path2D tile
+    buildMeshTiles(topo, objName, filter) {
+        const mesh = topojson.meshArcs(topo, topo.objects[objName], filter);
         const { arcs, transform } = topo;
+        const [wx0, wy0, wx1, wy1] = this.worldBounds;
+        const cell = this.FILL_CELL;
+        const cols = Math.max(1, Math.ceil((wx1 - wx0) / cell));
+        const rows = Math.max(1, Math.ceil((wy1 - wy0) / cell));
+        const paths = new Array(cols * rows).fill(null);
+
         const cache = new Map();
         const decode = (i) => {
             const idx = i < 0 ? ~i : i;
@@ -190,29 +206,109 @@ const MapView = {
                 let x = 0, y = 0;
                 pts = arcs[idx].map(([dx, dy]) => {
                     x += dx; y += dy;
-                    return [x * transform.scale[0] + transform.translate[0],
-                            y * transform.scale[1] + transform.translate[1]];
+                    // 反量化得到经纬度，再投影到与省份一致的平面坐标
+                    return this.proj([x * transform.scale[0] + transform.translate[0],
+                                      y * transform.scale[1] + transform.translate[1]]);
                 });
                 cache.set(idx, pts);
             }
             return i < 0 ? pts.slice().reverse() : pts;
         };
-        const chunks = [];
+
+        // 每个 tile 只存「落在该 tile 内」的线段：先按线段做矩形裁剪，
+        // 避免一条跨越多个 tile 的长海岸线被重复描边多次。
+        const pad = 4; // 少量重叠，防止相邻 tile 接缝处出现断点
+        const lastX = new Float64Array(cols * rows);
+        const lastY = new Float64Array(cols * rows);
+        lastX.fill(NaN); lastY.fill(NaN);
+
         for (const line of mesh.arcs) {
-            const path = new Path2D();
-            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, started = false;
+            const pts = [];
             for (const ai of line) {
-                const pts = decode(ai);
-                for (const [x, y] of pts) {
-                    if (started) path.lineTo(x, y);
-                    else { path.moveTo(x, y); started = true; }
-                    if (x < x0) x0 = x; if (x > x1) x1 = x;
-                    if (y < y0) y0 = y; if (y > y1) y1 = y;
+                const a = decode(ai);
+                for (const p of a) pts.push(p);
+            }
+            for (let i = 0; i + 1 < pts.length; i++) {
+                const ax = pts[i][0], ay = pts[i][1];
+                const bx = pts[i + 1][0], by = pts[i + 1][1];
+                if (ax === bx && ay === by) continue;
+                // 跨越日期变更线的线段：经度恰为 ±180° 的点会被 d3 投影折到
+                // 地图另一端，形成横贯全图的假线段（如瓦朗格尔岛海岸线）。
+                // 直接丢弃该线段，两端在地图左右边缘自然断开。
+                if (Math.abs(bx - ax) > (wx1 - wx0) / 2) continue;
+                const sx0 = Math.min(ax, bx), sx1 = Math.max(ax, bx);
+                const sy0 = Math.min(ay, by), sy1 = Math.max(ay, by);
+                const c0 = Math.max(0, Math.min(cols - 1, Math.floor((sx0 - wx0) / cell)));
+                const c1 = Math.max(0, Math.min(cols - 1, Math.floor((sx1 - wx0) / cell)));
+                const r0 = Math.max(0, Math.min(rows - 1, Math.floor((sy0 - wy0) / cell)));
+                const r1 = Math.max(0, Math.min(rows - 1, Math.floor((sy1 - wy0) / cell)));
+                for (let r = r0; r <= r1; r++) {
+                    for (let cc = c0; cc <= c1; cc++) {
+                        const rx0 = wx0 + cc * cell - pad, ry0 = wy0 + r * cell - pad;
+                        const rx1 = wx0 + (cc + 1) * cell + pad, ry1 = wy0 + (r + 1) * cell + pad;
+                        const t = this.clipSegment(ax, ay, bx, by, rx0, ry0, rx1, ry1);
+                        if (!t) continue;
+                        const dx = bx - ax, dy = by - ay;
+                        const px0 = ax + dx * t[0], py0 = ay + dy * t[0];
+                        const px1 = ax + dx * t[1], py1 = ay + dy * t[1];
+                        const k = r * cols + cc;
+                        let path = paths[k];
+                        if (!path) path = paths[k] = new Path2D();
+                        if (lastX[k] === px0 && lastY[k] === py0) {
+                            path.lineTo(px1, py1);
+                        } else {
+                            path.moveTo(px0, py0);
+                            path.lineTo(px1, py1);
+                        }
+                        lastX[k] = px1; lastY[k] = py1;
+                    }
                 }
             }
-            if (started) chunks.push({ path, bbox: [x0, y0, x1, y1] });
         }
-        return chunks;
+        return { wx0, wy0, cellW: cell, cellH: cell, cols, rows, paths };
+    },
+
+    // Liang–Barsky 线段裁剪：返回裁剪后的参数区间 [t0,t1]，不相交返回 null
+    clipSegment(ax, ay, bx, by, x0, y0, x1, y1) {
+        let t0 = 0, t1 = 1;
+        const dx = bx - ax, dy = by - ay;
+        const p = [-dx, dx, -dy, dy];
+        const q = [ax - x0, x1 - ax, ay - y0, y1 - ay];
+        for (let i = 0; i < 4; i++) {
+            if (p[i] === 0) {
+                if (q[i] < 0) return null;
+                continue;
+            }
+            const r = q[i] / p[i];
+            if (p[i] < 0) {
+                if (r > t1) return null;
+                if (r > t0) t0 = r;
+            } else {
+                if (r < t0) return null;
+                if (r < t1) t1 = r;
+            }
+        }
+        return t0 <= t1 ? [t0, t1] : null;
+    },
+
+    // 描边当前视口覆盖的 tile
+    strokeLineTiles(ctx, tiles, color, widthPx) {
+        if (!tiles) return;
+        const view = this.viewRect();
+        const { wx0, wy0, cellW, cellH, cols, rows, paths } = tiles;
+        const c0 = Math.max(0, Math.floor((view.x0 - wx0) / cellW));
+        const c1 = Math.min(cols - 1, Math.floor((view.x1 - wx0) / cellW));
+        const r0 = Math.max(0, Math.floor((view.y0 - wy0) / cellH));
+        const r1 = Math.min(rows - 1, Math.floor((view.y1 - wy0) / cellH));
+        ctx.strokeStyle = color;
+        ctx.lineWidth = widthPx / this.scale;
+        ctx.lineJoin = ctx.lineCap = 'round';
+        for (let r = r0; r <= r1; r++) {
+            for (let c = c0; c <= c1; c++) {
+                const p = paths[r * cols + c];
+                if (p) ctx.stroke(p);
+            }
+        }
     },
 
     // 国家配色：可玩国家用其定义色，其余按 ISO3 哈希生成稳定色
@@ -246,33 +342,53 @@ const MapView = {
         return iso ? this.countryColor(iso) : this.landColor;
     },
 
-    // 归属变化时调用（如战斗占领），让按国分组的填充缓存失效
-    invalidateFills() { this._ownerVersion++; },
+    // 归属变化时调用（如战斗占领），让填充缓存失效并触发重绘
+    invalidateFills() {
+        this._ownerVersion++;
+        this.requestDraw();
+    },
 
-    // 按颜色合并省份路径：每个国家只一次 fill/stroke，避免数千次绘制调用
-    fillGroups(layerKey, layer) {
+    // 省份填充按「颜色 × 空间网格」合并：
+    // 1) 同色同格只 fill 一次，调用次数从数千降到数十；
+    // 2) 每帧只遍历视口覆盖的网格，缩放/平移只处理主界面看得到的区域。
+    FILL_CELL: 512,
+    fillChunks(layerKey, layer) {
         const cache = this._fillCaches[layerKey];
-        if (cache && cache.version === this._ownerVersion) return cache.groups;
-        const byColor = new Map();
+        if (cache && cache.version === this._ownerVersion) return cache;
+
+        const [wx0, wy0, wx1, wy1] = this.worldBounds;
+        const cellW = this.FILL_CELL, cellH = this.FILL_CELL;
+        const cols = Math.max(1, Math.ceil((wx1 - wx0) / cellW));
+        const rows = Math.max(1, Math.ceil((wy1 - wy0) / cellH));
+        const cells = new Array(cols * rows).fill(null);
+
         for (const [id, path] of layer.paths) {
-            const color = this.provinceColor(id);
-            let g = byColor.get(color);
-            if (!g) {
-                g = { color, path: new Path2D(), bbox: [Infinity, Infinity, -Infinity, -Infinity] };
-                byColor.set(color, g);
-            }
-            g.path.addPath(path);
             const b = layer.bbox.get(id);
-            if (b) {
-                if (b[0] < g.bbox[0]) g.bbox[0] = b[0];
-                if (b[1] < g.bbox[1]) g.bbox[1] = b[1];
-                if (b[2] > g.bbox[2]) g.bbox[2] = b[2];
-                if (b[3] > g.bbox[3]) g.bbox[3] = b[3];
+            if (!b) continue;
+            const color = this.provinceColor(id);
+            const c0 = Math.max(0, Math.floor((b[0] - wx0) / cellW));
+            const c1 = Math.min(cols - 1, Math.floor((b[2] - wx0) / cellW));
+            const r0 = Math.max(0, Math.floor((b[1] - wy0) / cellH));
+            const r1 = Math.min(rows - 1, Math.floor((b[3] - wy0) / cellH));
+            for (let r = r0; r <= r1; r++) {
+                for (let c = c0; c <= c1; c++) {
+                    const k = r * cols + c;
+                    let bucket = cells[k];
+                    if (!bucket) bucket = cells[k] = new Map();
+                    let g = bucket.get(color);
+                    if (!g) { g = { color, path: new Path2D() }; bucket.set(color, g); }
+                    g.path.addPath(path);
+                }
             }
         }
-        const groups = [...byColor.values()];
-        this._fillCaches[layerKey] = { version: this._ownerVersion, groups };
-        return groups;
+
+        const chunk = {
+            version: this._ownerVersion,
+            wx0, wy0, cellW, cellH, cols, rows,
+            cells: cells.map(b => (b ? [...b.values()] : null)),
+        };
+        this._fillCaches[layerKey] = chunk;
+        return chunk;
     },
 
     // 合并输入触发的重绘，每帧最多一次
@@ -326,20 +442,10 @@ const MapView = {
         return null;
     },
 
-    /* ===================== 国界 ===================== */
-    buildCountryBorders() {
-        const objName = this.countryObjName();
-        const mesh = topojson.mesh(this.countriesTopo, this.countriesTopo.objects[objName]);
-        const d = this.geoPath(mesh);
-        if (d) this.countryBorderPath = new Path2D(d);
-    },
-
-    /* ===================== 前线索引（meshArcs） ===================== */
+    /* ===================== 前线索引（按弧段归属建表） ===================== */
     buildBorderIndex() {
         const objName = this.provinceObjName();
         const obj = this.topo.objects[objName];
-        // a !== b 只保留省份之间的内部边界
-        const m = topojson.meshArcs(this.topo, obj, (a, b) => a !== b);
         const { arcs, transform } = this.topo;
 
         // 构建 弧段索引 → 使用该弧段的省份集合（meshArcs 不返回 objects，需自行反查）
@@ -349,7 +455,8 @@ const MapView = {
                       : g.type === 'MultiPolygon' ? g.arcs : [];
             for (const ring of rings.flat()) {
                 for (const ai of ring) {
-                    const idx = Math.abs(ai);
+                    // TopoJSON 负索引表示反向引用：i < 0 时真实索引是 ~i
+                    const idx = ai < 0 ? ~ai : ai;
                     if (!arcProvinces[idx]) arcProvinces[idx] = new Set();
                     arcProvinces[idx].add(g.id);
                 }
@@ -365,38 +472,48 @@ const MapView = {
                 let x = 0, y = 0;
                 pts = arcs[idx].map(([dx, dy]) => {
                     x += dx; y += dy;
-                    // TopoJSON 反量化：world = quantized * scale + translate
-                    return [x * transform.scale[0] + transform.translate[0],
-                            y * transform.scale[1] + transform.translate[1]];
+                    // 反量化得到经纬度，再投影到省份平面坐标（前线绘制用）
+                    return this.proj([x * transform.scale[0] + transform.translate[0],
+                                      y * transform.scale[1] + transform.translate[1]]);
                 });
                 arcCache.set(idx, pts);
             }
             return i < 0 ? pts.slice().reverse() : pts;
         };
 
-        for (let i = 0; i < m.arcs.length; i++) {
-            const lineIdx = m.arcs[i];
-            // 收集该边界线两侧的省份
-            const provSet = new Set();
-            for (const ai of lineIdx) {
-                const set = arcProvinces[Math.abs(ai)];
-                if (set) for (const pid of set) provSet.add(pid);
-            }
-            if (provSet.size !== 2) continue;
-            const [pidA, pidB] = [...provSet];
-            const oa = this.index.meta[pidA]?.owner;
-            const ob = this.index.meta[pidB]?.owner;
+        // 逐弧段建索引：TopoJSON 中一条内部弧段正好被两个省引用，
+        // 直接按弧段取两侧省份，避免 meshArcs 拼接后的长链跨越多国边界。
+        for (let idx = 0; idx < arcs.length; idx++) {
+            const set = arcProvinces[idx];
+            if (!set || set.size !== 2) continue; // 海岸线弧段只属于一个省
+            const pids = [...set];
+            const oa = this.index.meta[pids[0]]?.owner;
+            const ob = this.index.meta[pids[1]]?.owner;
             if (!oa || !ob || oa === ob) continue; // 同国省界，不是前线
             const key = oa < ob ? oa + '|' + ob : ob + '|' + oa;
-            // 解码弧段为折线（世界坐标）
-            const merged = [];
-            for (const ai of lineIdx) {
-                const a = decodeArc(ai);
-                merged.push(...(merged.length ? a.slice(1) : a));
+            // 预生成 Path2D，避免每帧重建；同时记录 bbox 便于视口裁剪
+            let entry = this.borderIndex.get(key);
+            if (!entry) {
+                // 键是 ISO3，但战争状态按国家 id 存储，这里预先换算好
+                const game = this.game;
+                entry = {
+                    path: new Path2D(),
+                    bbox: [Infinity, Infinity, -Infinity, -Infinity],
+                    ids: [game ? game.countryIdByIso3(oa) : oa,
+                          game ? game.countryIdByIso3(ob) : ob],
+                };
+                this.borderIndex.set(key, entry);
             }
-            if (merged.length > 1) {
-                if (!this.borderIndex.has(key)) this.borderIndex.set(key, []);
-                this.borderIndex.get(key).push(merged);
+            const pts = decodeArc(idx);
+            const b = entry.bbox;
+            const halfW = (this.worldBounds[2] - this.worldBounds[0]) / 2;
+            for (let k = 0; k < pts.length; k++) {
+                const [x, y] = pts[k];
+                // 跨日期变更线的线段会把 x 折到地图另一端：断开子路径而不是连线
+                if (k === 0 || Math.abs(x - pts[k - 1][0]) > halfW) entry.path.moveTo(x, y);
+                else entry.path.lineTo(x, y);
+                if (x < b[0]) b[0] = x; if (x > b[2]) b[2] = x;
+                if (y < b[1]) b[1] = y; if (y > b[3]) b[3] = y;
             }
         }
     },
@@ -488,6 +605,15 @@ const MapView = {
         // 应用相机变换，进入世界坐标空间
         ctx.setTransform(this.scale * dpr, 0, 0, this.scale * dpr, this.offsetX * dpr, this.offsetY * dpr);
 
+        // 只绘制视口范围内的内容：所有图层都被裁剪到主界面可见区域
+        const view = this.viewRect();
+        const pad = 3 / this.scale;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(view.x0 - pad, view.y0 - pad,
+                 (view.x1 - view.x0) + pad * 2, (view.y1 - view.y0) + pad * 2);
+        ctx.clip();
+
         // === LOD 分层：按缩放比例选择渲染图层 ===
         if (this.scale < this.LOD_COUNTRY) {
             // 缩放小（看全貌）：只显示国家
@@ -500,13 +626,17 @@ const MapView = {
             this.drawCountryBorders(ctx);
         } else if (this.scale < this.LOD_PROV_COARSE) {
             // 中等缩放：省份粗档
+            // 先铺国家底色：admin-1 数据没有覆盖到 80+ 个国家（瑞士、台湾等），
+            // 不铺底的话这些国家在省份 LOD 下会变成海洋色（看起来“消失”）
+            this.drawCountryFills(ctx);
             this.drawProvinceFills(ctx, 'l0', this.layers.provL0);
-            this.drawProvinceBorders(ctx, this.layers.provL0);
+            this.drawProvinceBorders(ctx, 'provL0');
             this.drawCountryBorders(ctx);
         } else {
-            // 放大：省份精档
+            // 放大：省份精档（同样先铺国家底色兜底）
+            this.drawCountryFills(ctx);
             this.drawProvinceFills(ctx, 'l1', this.layers.provL1);
-            this.drawProvinceBorders(ctx, this.layers.provL1);
+            this.drawProvinceBorders(ctx, 'provL1');
             this.drawCountryBorders(ctx);
         }
 
@@ -517,6 +647,8 @@ const MapView = {
         this.drawArmies(ctx);
         // 高亮仅在省份层级显示（国家级不画省份轮廓）
         if (this.scale >= this.LOD_COUNTRY) this.drawHighlights(ctx);
+
+        ctx.restore();
 
         this.drawMinimap();
     },
@@ -538,77 +670,58 @@ const MapView = {
     },
 
     drawProvinceFills(ctx, layerKey, layer) {
+        const chunk = this.fillChunks(layerKey, layer);
         const view = this.viewRect();
-        // 按国家颜色分组合并路径：fill/stroke 次数从数千降到数十
-        for (const g of this.fillGroups(layerKey, layer)) {
-            if (!this.inView(g.bbox, view)) continue;
-            ctx.fillStyle = g.color;
-            ctx.fill(g.path);
-            // 同色描边覆盖相邻省份间的抗锯齿细缝，避免透出海洋色
-            ctx.strokeStyle = g.color;
-            ctx.lineWidth = 0.8 / this.scale;
-            ctx.lineJoin = 'round';
-            ctx.stroke(g.path);
+        const { wx0, wy0, cellW, cellH, cols, rows, cells } = chunk;
+        // 只遍历视口覆盖的网格单元
+        const c0 = Math.max(0, Math.floor((view.x0 - wx0) / cellW));
+        const c1 = Math.min(cols - 1, Math.floor((view.x1 - wx0) / cellW));
+        const r0 = Math.max(0, Math.floor((view.y0 - wy0) / cellH));
+        const r1 = Math.min(rows - 1, Math.floor((view.y1 - wy0) / cellH));
+        for (let r = r0; r <= r1; r++) {
+            for (let c = c0; c <= c1; c++) {
+                const list = cells[r * cols + c];
+                if (!list) continue;
+                for (const g of list) {
+                    ctx.fillStyle = g.color;
+                    ctx.fill(g.path);
+                }
+            }
         }
     },
 
     drawCountryBorders(ctx) {
-        if (!this.countryBorderPath) return;
-        ctx.strokeStyle = 'rgba(8,12,18,0.85)';
-        ctx.lineWidth = 1.6 / this.scale;
-        ctx.lineJoin = 'round';
-        ctx.stroke(this.countryBorderPath);
+        this.strokeLineTiles(ctx, this.lineTiles && this.lineTiles.country,
+                             'rgba(8,12,18,0.85)', 1.6);
     },
 
-    drawProvinceBorders(ctx, layer) {
-        const view = this.viewRect();
-        ctx.strokeStyle = 'rgba(10,14,20,0.45)';
-        ctx.lineWidth = 0.6 / this.scale;
-        ctx.lineJoin = 'round';
-        for (const [id, path] of layer.paths) {
-            const b = layer.bbox.get(id);
-            if (!b || !this.inView(b, view)) continue;
-            ctx.stroke(path);
-        }
+    drawProvinceBorders(ctx, layerKey) {
+        this.strokeLineTiles(ctx, this.lineTiles && this.lineTiles[layerKey],
+                             'rgba(10,14,20,0.45)', 0.6);
     },
 
     drawCoastline(ctx) {
-        if (!this.coastChunks) return;
-        // 低缩放用粗档海岸线，放大后用精档；只描边视野内的块
-        const chunks = this.scale < this.LOD_PROV_COARSE ? this.coastChunks.l0 : this.coastChunks.l1;
-        if (!chunks) return;
-        const view = this.viewRect();
-        ctx.lineJoin = 'round';
-        const halo = this.scale < this.LOD_COUNTRY;
-        const passes = halo ? 2 : 1;
-        for (let p = 0; p < passes; p++) {
-            if (halo && p === 0) {
-                ctx.strokeStyle = 'rgba(130,155,180,0.5)';
-                ctx.lineWidth = 2.8 / this.scale;
-            } else {
-                ctx.strokeStyle = 'rgba(4,8,14,0.9)';
-                ctx.lineWidth = 1.3 / this.scale;
-            }
-            for (const c of chunks) {
-                if (this.inView(c.bbox, view)) ctx.stroke(c.path);
-            }
+        if (!this.lineTiles) return;
+        // 海岸线也按 LOD 取档：全图用 50m 粗档（顶点少一个数量级），
+        // 中等缩放用省界粗档，放大后用精档；只描边视野内的 tile。
+        const key = this.scale < this.LOD_COUNTRY ? 'coastCountry'
+                  : this.scale < this.LOD_PROV_COARSE ? 'coastL0'
+                  : 'coastL1';
+        // 浅色光晕只用于全图概览，避免中高缩放下同一条线描两遍
+        if (this.scale < this.LOD_COUNTRY) {
+            this.strokeLineTiles(ctx, this.lineTiles[key], 'rgba(130,155,180,0.5)', 2.8);
         }
+        this.strokeLineTiles(ctx, this.lineTiles[key], 'rgba(4,8,14,0.9)', 1.3);
     },
 
     drawFrontlines(ctx) {
         const game = this.game;
         const t = performance.now() / 1000;
+        const view = this.viewRect();
         const paths = [];
-        for (const [key, segs] of this.borderIndex) {
-            const [a, b] = key.split('|');
-            if (game.areAtWar(a, b)) {
-                for (const s of segs) {
-                    const p = new Path2D();
-                    p.moveTo(s[0][0], s[0][1]);
-                    for (let i = 1; i < s.length; i++) p.lineTo(s[i][0], s[i][1]);
-                    paths.push(p);
-                }
-            }
+        for (const entry of this.borderIndex.values()) {
+            if (!this.inView(entry.bbox, view)) continue;
+            if (game.areAtWar(entry.ids[0], entry.ids[1])) paths.push(entry.path);
         }
         if (paths.length === 0) return;
         ctx.lineJoin = ctx.lineCap = 'round';

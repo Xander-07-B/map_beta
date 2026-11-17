@@ -1,9 +1,20 @@
 // scripts/build-index.mjs — 离线构建省份索引：邻接表 + 元数据 + bbox
 // 用法: node scripts/build-index.mjs
+// 几何来自 provinces.l1.topo.json（属性已剥离以减小体积），
+// 名称/归属等属性从原始 Natural Earth GeoJSON 按 ne_id 关联。
 import { readFileSync, writeFileSync } from "node:fs";
 import * as topojson from "topojson-client";
 
 const topo = JSON.parse(readFileSync("data/provinces.l1.topo.json", "utf8"));
+const raw = JSON.parse(readFileSync("data/ne_10m_admin_1_states_provinces.geojson", "utf8"));
+
+// 原始属性表：ne_id -> properties（TopoJSON 几何 id 与之一一对应）
+const propsById = new Map();
+for (const f of raw.features) {
+    const p = f.properties || {};
+    if (p.ne_id != null) propsById.set(+p.ne_id, p);
+}
+
 // mapshaper 以输入文件名作为对象名，这里取第一个 GeometryCollection
 const objName = Object.keys(topo.objects).find(k => topo.objects[k].type === "GeometryCollection");
 const geoms = topo.objects[objName].geometries;
@@ -50,8 +61,10 @@ function bboxOf(geom) {
 
 // ③ 元数据
 const meta = {};
-geoms.forEach((g, i) => {
-    const p = g.properties || {};
+let missingProps = 0;
+geoms.forEach((g) => {
+    const p = propsById.get(+g.id) || {};
+    if (!p.adm0_a3) missingProps++;
     meta[g.id] = {
         id: +g.id,
         name: p.name_zh || p.name || `prov${g.id}`,
@@ -65,4 +78,4 @@ geoms.forEach((g, i) => {
 });
 
 writeFileSync("data/index.json", JSON.stringify({ neighbors, meta }));
-console.log(`provinces=${geoms.length}, edges=${adj.flat().length / 2}`);
+console.log(`provinces=${geoms.length}, edges=${adj.flat().length / 2}, missingProps=${missingProps}`);

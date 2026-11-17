@@ -677,7 +677,8 @@ const Game = {
     selectProvince(id) {
         this.selectedProvince = id;
         if (UI) UI.updateProvincePanel();
-        if (MapView) MapView.draw();
+        // 鼠标悬停会频繁触发，合并到下一帧绘制
+        if (MapView) MapView.requestDraw();
     },
 
     // ===================== 军队管理 =====================
@@ -929,6 +930,8 @@ const Game = {
         this.logMsg(`${c.name} 对 ${this.countryById(targetId).name} 宣战！`);
         // AI 在对方省份部署军队
         this.aiRespondToWar(countryId, targetId);
+        // 战争状态影响地图前线，立即重绘
+        if (typeof MapView !== 'undefined' && MapView.requestDraw) MapView.requestDraw();
     },
 
     makePeace(countryId, targetId) {
@@ -936,6 +939,7 @@ const Game = {
         if (!c) return;
         c.relations[targetId] = Math.min(30, c.relations[targetId] + 40);
         this.logMsg(`${c.name} 与 ${this.countryById(targetId).name} 议和。`);
+        if (typeof MapView !== 'undefined' && MapView.requestDraw) MapView.requestDraw();
     },
 
     formAlliance(countryId, targetId) {

@@ -73,7 +73,7 @@ const UI = {
         this.updateTopBar();
         this.updateBottomBar();
         this.renderPanel(this.currentPanel);
-        if (MapView) MapView.requestDraw();
+        // 地图只在状态真正变化时重绘，避免每 400ms 定时刷新整张地图
     },
 
     // ===================== 顶部栏 =====================
