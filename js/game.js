@@ -68,6 +68,8 @@ const Game = {
         }
 
         this.playerCountryId = countryId;
+        // 省份归属已确定，刷新地图填充分组缓存
+        if (typeof MapView !== 'undefined' && MapView.invalidateFills) MapView.invalidateFills();
 
         // 玩家初始分配一些装备库存
         this.equipmentStock[countryId] = this.computeInitialEquipment(countryId);
@@ -580,6 +582,7 @@ const Game = {
             if (maxAtk / totalAtk > 0.55 && Math.random() < 0.05) {
                 // 占领省份
                 p.owner = strongest;
+                if (typeof MapView !== 'undefined' && MapView.invalidateFills) MapView.invalidateFills();
                 // 被占领方军队撤退到相邻省份
                 for (const a of armies) {
                     if (a.owner !== strongest && a.strength > 0) {
@@ -710,7 +713,10 @@ const Game = {
         this.armies.push(army);
         // 驻守该省份
         const prov = this.provinceById(provinceId);
-        if (prov && !prov.owner) prov.owner = countryId;
+        if (prov && !prov.owner) {
+            prov.owner = countryId;
+            if (typeof MapView !== 'undefined' && MapView.invalidateFills) MapView.invalidateFills();
+        }
         this.logMsg(`组建了 ${c.name} 的 ${tpl.name}`);
         return army;
     },

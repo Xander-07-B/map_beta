@@ -23,8 +23,9 @@ const decodeArc = (i) => {
         let x = 0, y = 0;
         pts = arcs[idx].map(([dx, dy]) => {
             x += dx; y += dy;
-            return [transform.scale[0] * (x + transform.translate[0]),
-                    transform.scale[1] * (y + transform.translate[1])];
+            // TopoJSON 反量化：world = quantized * scale + translate
+            return [x * transform.scale[0] + transform.translate[0],
+                    y * transform.scale[1] + transform.translate[1]];
         });
         arcCache.set(idx, pts);
     }

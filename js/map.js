@@ -19,8 +19,8 @@ const MapView = {
     // scale < LOD_COUNTRY：只显示国家（全图/概览）
     // LOD_COUNTRY <= scale < LOD_PROV_COARSE：省份粗档
     // scale >= LOD_PROV_COARSE：省份精档
-    LOD_COUNTRY: 1.0,
-    LOD_PROV_COARSE: 2.5,
+    LOD_COUNTRY: 2.0,
+    LOD_PROV_COARSE: 4.8,
 
     // === 图层 ===
     // layers.country / provL0 / provL1 各含 { paths, bbox }
@@ -29,7 +29,19 @@ const MapView = {
     bbox: null,           // Map<ne_id, [x0,y0,x1,y1]>  指向 provL1
     seqIndex: null,       // Map<ne_id, number>  顺序索引（拾取用）
     countryBorderPath: null, // 国界 mesh 的 Path2D
+    coastChunks: null,       // 海岸线分块 [{path,bbox}]，按 LOD 与视口裁剪
+    landBasePath: null,      // 合并陆地底色（仅国家级 LOD 兜底）
     worldBounds: [0, 0, 0, 0], // 投影后世界范围
+
+    // === 配色 ===
+    oceanColor: '#0b2545',
+    landColor: '#2f3b33',    // 无归属省份的陆地底色（保证任何缩放都有颜色）
+
+    // === 填充分组缓存（按国家颜色合并路径，大幅减少 fill 调用）===
+    _fillCaches: {},         // layerKey -> { version, groups: [{color,path,bbox}] }
+    _ownerVersion: 0,
+    _drawPending: false,
+    _miniCache: null,        // 小地图离屏缓存
 
     // === 拾取网格 ===
     grid: { cols: 0, rows: 0, cells: {} },
@@ -41,6 +53,7 @@ const MapView = {
     scale: 1, offsetX: 0, offsetY: 0,
     targetScale: 1, targetOffsetX: 0, targetOffsetY: 0,
     viewW: 0, viewH: 0,
+    fitScale: 0.3, minScale: 0.25, maxScale: 7.0,
 
     // === 交互状态 ===
     hoverProvince: null, selectedProvince: null,
@@ -152,14 +165,63 @@ const MapView = {
 
         // 世界范围取省份精档
         this.worldBounds = l1Res.bounds;
+
+        // 合并陆地底色：把所有国家路径拼成一个 Path2D，作为国家级 LOD 的兜底填充
+        const land = new Path2D();
+        for (const p of this.layers.country.paths.values()) land.addPath(p);
+        this.landBasePath = land;
+
+        // 海岸线：外部弧段（a === b 即只被一个要素使用），按线段分块缓存以便视口裁剪
+        this.coastChunks = {
+            l0: this.buildCoastChunks(this.topoL0, objNameL0),
+            l1: this.buildCoastChunks(this.topo, objName),
+        };
+    },
+
+    // 把海岸线拆成带 bbox 的路径块，绘制时只描边视野内的块
+    buildCoastChunks(topo, objName) {
+        const mesh = topojson.meshArcs(topo, topo.objects[objName], (a, b) => a === b);
+        const { arcs, transform } = topo;
+        const cache = new Map();
+        const decode = (i) => {
+            const idx = i < 0 ? ~i : i;
+            let pts = cache.get(idx);
+            if (!pts) {
+                let x = 0, y = 0;
+                pts = arcs[idx].map(([dx, dy]) => {
+                    x += dx; y += dy;
+                    return [x * transform.scale[0] + transform.translate[0],
+                            y * transform.scale[1] + transform.translate[1]];
+                });
+                cache.set(idx, pts);
+            }
+            return i < 0 ? pts.slice().reverse() : pts;
+        };
+        const chunks = [];
+        for (const line of mesh.arcs) {
+            const path = new Path2D();
+            let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity, started = false;
+            for (const ai of line) {
+                const pts = decode(ai);
+                for (const [x, y] of pts) {
+                    if (started) path.lineTo(x, y);
+                    else { path.moveTo(x, y); started = true; }
+                    if (x < x0) x0 = x; if (x > x1) x1 = x;
+                    if (y < y0) y0 = y; if (y > y1) y1 = y;
+                }
+            }
+            if (started) chunks.push({ path, bbox: [x0, y0, x1, y1] });
+        }
+        return chunks;
     },
 
     // 国家配色：可玩国家用其定义色，其余按 ISO3 哈希生成稳定色
     countryColor(iso3) {
-        if (!iso3) return '#2a3140';
-        const cid = this.game.countryIdByIso3(iso3);
+        if (!iso3) return this.landColor;
+        const game = this.game;
+        const cid = game ? game.countryIdByIso3(iso3) : null;
         if (cid) {
-            const c = this.game.countryById(cid);
+            const c = game.countryById(cid);
             if (c) return c.color;
         }
         // 非可玩国家：确定性哈希生成低饱和色
@@ -167,6 +229,60 @@ const MapView = {
         for (let i = 0; i < iso3.length; i++) h = (h * 31 + iso3.charCodeAt(i)) >>> 0;
         const hue = h % 360;
         return `hsl(${hue}, 32%, 42%)`;
+    },
+
+    // 省份颜色：运行时归属国优先，其次原始 ISO3 国家色，最后陆地底色
+    // 这样任何 LOD、任何归属状态下都有颜色，不会露出海洋色
+    provinceColor(id) {
+        const game = this.game;
+        if (game) {
+            const owner = game.ownerOf(id);
+            if (owner) {
+                const c = game.countryById(owner);
+                if (c) return c.color;
+            }
+        }
+        const iso = this.index && this.index.meta[id] ? this.index.meta[id].owner : null;
+        return iso ? this.countryColor(iso) : this.landColor;
+    },
+
+    // 归属变化时调用（如战斗占领），让按国分组的填充缓存失效
+    invalidateFills() { this._ownerVersion++; },
+
+    // 按颜色合并省份路径：每个国家只一次 fill/stroke，避免数千次绘制调用
+    fillGroups(layerKey, layer) {
+        const cache = this._fillCaches[layerKey];
+        if (cache && cache.version === this._ownerVersion) return cache.groups;
+        const byColor = new Map();
+        for (const [id, path] of layer.paths) {
+            const color = this.provinceColor(id);
+            let g = byColor.get(color);
+            if (!g) {
+                g = { color, path: new Path2D(), bbox: [Infinity, Infinity, -Infinity, -Infinity] };
+                byColor.set(color, g);
+            }
+            g.path.addPath(path);
+            const b = layer.bbox.get(id);
+            if (b) {
+                if (b[0] < g.bbox[0]) g.bbox[0] = b[0];
+                if (b[1] < g.bbox[1]) g.bbox[1] = b[1];
+                if (b[2] > g.bbox[2]) g.bbox[2] = b[2];
+                if (b[3] > g.bbox[3]) g.bbox[3] = b[3];
+            }
+        }
+        const groups = [...byColor.values()];
+        this._fillCaches[layerKey] = { version: this._ownerVersion, groups };
+        return groups;
+    },
+
+    // 合并输入触发的重绘，每帧最多一次
+    requestDraw() {
+        if (this._drawPending) return;
+        this._drawPending = true;
+        requestAnimationFrame(() => {
+            this._drawPending = false;
+            this.draw();
+        });
     },
 
     /* ===================== 拾取网格 ===================== */
@@ -249,8 +365,9 @@ const MapView = {
                 let x = 0, y = 0;
                 pts = arcs[idx].map(([dx, dy]) => {
                     x += dx; y += dy;
-                    return [transform.scale[0] * (x + transform.translate[0]),
-                            transform.scale[1] * (y + transform.translate[1])];
+                    // TopoJSON 反量化：world = quantized * scale + translate
+                    return [x * transform.scale[0] + transform.translate[0],
+                            y * transform.scale[1] + transform.translate[1]];
                 });
                 arcCache.set(idx, pts);
             }
@@ -297,27 +414,53 @@ const MapView = {
         return { x0: a.x, y0: a.y, x1: b.x, y1: b.y };
     },
 
-    fitWorld() {
+    clampScale(s) {
+        return Math.max(this.minScale, Math.min(this.maxScale, s));
+    },
+
+    // 边界钳制：地图大于视口时不允许拖出空白；小于视口时居中
+    clampCamera() {
         if (!this.ready) return;
         const [x0, y0, x1, y1] = this.worldBounds;
-        const w = x1 - x0, h = y1 - y0;
-        const sx = this.viewW / w, sy = this.viewH / h;
-        this.scale = Math.min(sx, sy) * 0.96;
-        this.offsetX = (this.viewW - w * this.scale) / 2 - x0 * this.scale;
-        this.offsetY = (this.viewH - h * this.scale) / 2 - y0 * this.scale;
+        const mapW = (x1 - x0) * this.scale;
+        const mapH = (y1 - y0) * this.scale;
+        if (mapW <= this.viewW) {
+            this.offsetX = (this.viewW - mapW) / 2 - x0 * this.scale;
+        } else {
+            this.offsetX = Math.max(this.viewW - x1 * this.scale,
+                                    Math.min(-x0 * this.scale, this.offsetX));
+        }
+        if (mapH <= this.viewH) {
+            this.offsetY = (this.viewH - mapH) / 2 - y0 * this.scale;
+        } else {
+            this.offsetY = Math.max(this.viewH - y1 * this.scale,
+                                    Math.min(-y0 * this.scale, this.offsetY));
+        }
         this.targetScale = this.scale;
         this.targetOffsetX = this.offsetX;
         this.targetOffsetY = this.offsetY;
     },
 
+    fitWorld() {
+        if (!this.ready) return;
+        const [x0, y0, x1, y1] = this.worldBounds;
+        const w = x1 - x0, h = y1 - y0;
+        const sx = this.viewW / w, sy = this.viewH / h;
+        this.fitScale = Math.min(sx, sy) * 0.96;
+        // 最小缩放略小于全图适配，最大放大 7 倍，避免无意义的超远缩放
+        this.minScale = this.fitScale * 0.9;
+        this.scale = this.fitScale;
+        this.offsetX = (this.viewW - w * this.scale) / 2 - x0 * this.scale;
+        this.offsetY = (this.viewH - h * this.scale) / 2 - y0 * this.scale;
+        this.clampCamera();
+    },
+
     centerOn(wx, wy, scale) {
-        this.scale = scale;
+        this.scale = this.clampScale(scale);
         this.offsetX = this.viewW / 2 - wx * this.scale;
         this.offsetY = this.viewH / 2 - wy * this.scale;
-        this.targetScale = this.scale;
-        this.targetOffsetX = this.offsetX;
-        this.targetOffsetY = this.offsetY;
-        this.draw();
+        this.clampCamera();
+        this.requestDraw();
     },
 
     resize() {
@@ -339,7 +482,7 @@ const MapView = {
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
         ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         // 海洋背景
-        ctx.fillStyle = '#0b2545';
+        ctx.fillStyle = this.oceanColor;
         ctx.fillRect(0, 0, this.viewW, this.viewH);
 
         // 应用相机变换，进入世界坐标空间
@@ -348,19 +491,27 @@ const MapView = {
         // === LOD 分层：按缩放比例选择渲染图层 ===
         if (this.scale < this.LOD_COUNTRY) {
             // 缩放小（看全貌）：只显示国家
+            // 先用合并陆地底色铺满，保证任何缺口都不会露出海洋色
+            if (this.landBasePath) {
+                ctx.fillStyle = this.landColor;
+                ctx.fill(this.landBasePath);
+            }
             this.drawCountryFills(ctx);
             this.drawCountryBorders(ctx);
         } else if (this.scale < this.LOD_PROV_COARSE) {
             // 中等缩放：省份粗档
-            this.drawProvinceFills(ctx, this.layers.provL0);
+            this.drawProvinceFills(ctx, 'l0', this.layers.provL0);
             this.drawProvinceBorders(ctx, this.layers.provL0);
             this.drawCountryBorders(ctx);
         } else {
             // 放大：省份精档
-            this.drawProvinceFills(ctx, this.layers.provL1);
+            this.drawProvinceFills(ctx, 'l1', this.layers.provL1);
             this.drawProvinceBorders(ctx, this.layers.provL1);
             this.drawCountryBorders(ctx);
         }
+
+        // 海岸线：让地图外轮廓清晰可见
+        this.drawCoastline(ctx);
 
         this.drawFrontlines(ctx);
         this.drawArmies(ctx);
@@ -386,36 +537,61 @@ const MapView = {
         }
     },
 
-    drawProvinceFills(ctx, layer) {
+    drawProvinceFills(ctx, layerKey, layer) {
         const view = this.viewRect();
-        const game = this.game;
-        for (const [id, path] of layer.paths) {
-            const b = layer.bbox.get(id);
-            if (!b || !this.inView(b, view)) continue;
-            const owner = game.ownerOf(id);
-            const color = owner ? (game.countryById(owner)?.color || '#555') : '#2a3140';
-            ctx.fillStyle = color;
-            ctx.fill(path);
+        // 按国家颜色分组合并路径：fill/stroke 次数从数千降到数十
+        for (const g of this.fillGroups(layerKey, layer)) {
+            if (!this.inView(g.bbox, view)) continue;
+            ctx.fillStyle = g.color;
+            ctx.fill(g.path);
+            // 同色描边覆盖相邻省份间的抗锯齿细缝，避免透出海洋色
+            ctx.strokeStyle = g.color;
+            ctx.lineWidth = 0.8 / this.scale;
+            ctx.lineJoin = 'round';
+            ctx.stroke(g.path);
         }
     },
 
     drawCountryBorders(ctx) {
         if (!this.countryBorderPath) return;
-        ctx.strokeStyle = 'rgba(15,20,28,0.6)';
-        ctx.lineWidth = 1.1 / this.scale;
+        ctx.strokeStyle = 'rgba(8,12,18,0.85)';
+        ctx.lineWidth = 1.6 / this.scale;
         ctx.lineJoin = 'round';
         ctx.stroke(this.countryBorderPath);
     },
 
     drawProvinceBorders(ctx, layer) {
         const view = this.viewRect();
-        ctx.strokeStyle = 'rgba(10,14,20,0.35)';
+        ctx.strokeStyle = 'rgba(10,14,20,0.45)';
         ctx.lineWidth = 0.6 / this.scale;
         ctx.lineJoin = 'round';
         for (const [id, path] of layer.paths) {
             const b = layer.bbox.get(id);
             if (!b || !this.inView(b, view)) continue;
             ctx.stroke(path);
+        }
+    },
+
+    drawCoastline(ctx) {
+        if (!this.coastChunks) return;
+        // 低缩放用粗档海岸线，放大后用精档；只描边视野内的块
+        const chunks = this.scale < this.LOD_PROV_COARSE ? this.coastChunks.l0 : this.coastChunks.l1;
+        if (!chunks) return;
+        const view = this.viewRect();
+        ctx.lineJoin = 'round';
+        const halo = this.scale < this.LOD_COUNTRY;
+        const passes = halo ? 2 : 1;
+        for (let p = 0; p < passes; p++) {
+            if (halo && p === 0) {
+                ctx.strokeStyle = 'rgba(130,155,180,0.5)';
+                ctx.lineWidth = 2.8 / this.scale;
+            } else {
+                ctx.strokeStyle = 'rgba(4,8,14,0.9)';
+                ctx.lineWidth = 1.3 / this.scale;
+            }
+            for (const c of chunks) {
+                if (this.inView(c.bbox, view)) ctx.stroke(c.path);
+            }
         }
     },
 
@@ -519,30 +695,45 @@ const MapView = {
     },
 
     /* ===================== 小地图 ===================== */
-    drawMinimap() {
-        if (!this.miniCanvas || !this.miniCtx) return;
-        const ctx = this.miniCtx;
+    miniTransform() {
         const w = this.miniCanvas.width, h = this.miniCanvas.height;
         const [x0, y0, x1, y1] = this.worldBounds;
-        const sx = w / (x1 - x0), sy = h / (y1 - y0);
-        ctx.clearRect(0, 0, w, h);
-        ctx.fillStyle = '#0b2545';
-        ctx.fillRect(0, 0, w, h);
-        // 小地图用国家图层（轻量、清晰）
-        const cLayer = this.layers.country;
-        for (const [iso3, path] of cLayer.paths) {
-            ctx.fillStyle = this.countryColor(iso3);
-            ctx.fill(path);
+        const s = Math.min(w / (x1 - x0), h / (y1 - y0));
+        return { w, h, s, ox: (w - (x1 - x0) * s) / 2 - x0 * s, oy: (h - (y1 - y0) * s) / 2 - y0 * s };
+    },
+
+    // 小地图底图只渲染一次到离屏画布，之后每帧只贴图 + 画视口框
+    buildMiniCache() {
+        if (!this.miniCanvas || !this.ready) return;
+        const { w, h, s, ox, oy } = this.miniTransform();
+        const c = document.createElement('canvas');
+        c.width = w; c.height = h;
+        const g = c.getContext('2d');
+        g.fillStyle = this.oceanColor;
+        g.fillRect(0, 0, w, h);
+        g.setTransform(s, 0, 0, s, ox, oy);
+        for (const [iso3, path] of this.layers.country.paths) {
+            g.fillStyle = this.countryColor(iso3);
+            g.fill(path);
         }
+        this._miniCache = c;
+    },
+
+    drawMinimap() {
+        if (!this.miniCanvas || !this.miniCtx) return;
+        if (!this._miniCache) this.buildMiniCache();
+        if (!this._miniCache) return;
+        const ctx = this.miniCtx;
+        const { w, h, s, ox, oy } = this.miniTransform();
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, w, h);
+        ctx.drawImage(this._miniCache, 0, 0, w, h);
         // 视口框
         const v0 = this.screenToWorld(0, 0);
         const v1 = this.screenToWorld(this.viewW, this.viewH);
         ctx.strokeStyle = '#c9a96e';
         ctx.lineWidth = 1;
-        ctx.strokeRect(
-            (v0.x - x0) * sx, (v0.y - y0) * sy,
-            (v1.x - v0.x) * sx, (v1.y - v0.y) * sy
-        );
+        ctx.strokeRect(v0.x * s + ox, v0.y * s + oy, (v1.x - v0.x) * s, (v1.y - v0.y) * s);
     },
 
     /* ===================== 事件 ===================== */
@@ -583,17 +774,19 @@ const MapView = {
             const dy = e.clientY - this.lastMouseY;
             this.offsetX += dx;
             this.offsetY += dy;
-            this.targetOffsetX = this.offsetX;
-            this.targetOffsetY = this.offsetY;
+            this.clampCamera();
             this.lastMouseX = e.clientX;
             this.lastMouseY = e.clientY;
-            this.draw();
+            this.hideTooltip();
+            this.requestDraw();
             return;
         }
         if (!this.ready) return;
         const world = this.screenToWorld(pos.x, pos.y);
+        const prevHover = this.hoverProvince ? this.hoverProvince.id : null;
         const prov = this.findProvinceAt(world.x, world.y);
         this.hoverProvince = prov;
+        if ((prov ? prov.id : null) !== prevHover) this.requestDraw();
         if (prov) {
             this.showTooltip(prov, pos);
             this.canvas.style.cursor = 'pointer';
@@ -625,14 +818,13 @@ const MapView = {
         const pos = this.getMousePos(e);
         const worldBefore = this.screenToWorld(pos.x, pos.y);
         const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-        const newScale = Math.max(0.12, Math.min(14, this.scale * factor));
+        const newScale = this.clampScale(this.scale * factor);
+        if (newScale === this.scale) return;
         this.offsetX = pos.x - worldBefore.x * newScale;
         this.offsetY = pos.y - worldBefore.y * newScale;
         this.scale = newScale;
-        this.targetScale = this.scale;
-        this.targetOffsetX = this.offsetX;
-        this.targetOffsetY = this.offsetY;
-        this.draw();
+        this.clampCamera();
+        this.requestDraw();
     },
 
     onDoubleClick(e) {
@@ -674,14 +866,15 @@ const MapView = {
         if (this.isPinching && touches.length === 2) {
             const dist = this.touchDistance(touches);
             const factor = dist / this.pinchStartDist;
-            const newScale = Math.max(0.12, Math.min(14, this.pinchStartScale * factor));
+            const newScale = this.clampScale(this.pinchStartScale * factor);
             const mid = this.touchMidpoint(touches);
             const midPos = this.getPos(mid.x, mid.y);
             const worldBefore = this.screenToWorld(this.pinchMid.x, this.pinchMid.y);
             this.scale = newScale;
             this.offsetX = midPos.x - worldBefore.x * newScale;
             this.offsetY = midPos.y - worldBefore.y * newScale;
-            this.draw();
+            this.clampCamera();
+            this.requestDraw();
             return;
         }
         if (touches.length === 1 && this.isDragging) {
@@ -690,9 +883,11 @@ const MapView = {
             const dy = t.clientY - this.lastMouseY;
             this.offsetX += dx;
             this.offsetY += dy;
+            this.clampCamera();
             this.lastMouseX = t.clientX;
             this.lastMouseY = t.clientY;
-            this.draw();
+            this.hideTooltip();
+            this.requestDraw();
             return;
         }
         if (touches.length === 1) {

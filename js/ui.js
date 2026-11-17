@@ -73,7 +73,7 @@ const UI = {
         this.updateTopBar();
         this.updateBottomBar();
         this.renderPanel(this.currentPanel);
-        if (MapView) MapView.draw();
+        if (MapView) MapView.requestDraw();
     },
 
     // ===================== 顶部栏 =====================
