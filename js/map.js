@@ -311,9 +311,14 @@ const MapView = {
         }
     },
 
+    // 配色别名：台湾、香港、澳门与中国大陆同色
+    // （数据里仍保留各自的 adm0_a3，只影响颜色，不改变归属与玩法）
+    COLOR_ALIAS: { TWN: 'CHN', HKG: 'CHN', MAC: 'CHN' },
+
     // 国家配色：可玩国家用其定义色，其余按 ISO3 哈希生成稳定色
     countryColor(iso3) {
         if (!iso3) return this.landColor;
+        iso3 = this.COLOR_ALIAS[iso3] || iso3;
         const game = this.game;
         const cid = game ? game.countryIdByIso3(iso3) : null;
         if (cid) {
