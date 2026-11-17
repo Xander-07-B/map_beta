@@ -15,12 +15,12 @@ const MapView = {
     proj: null,          // d3 投影（加载时算一次）
     geoPath: null,       // d3.geoPath(proj)
 
-    // === LOD 阈值（按 scale 切换图层）===
-    // scale < LOD_COUNTRY：只显示国家
+    // === LOD 阈值（按 scale 切换图层，调晚触发让每层保持更久）===
+    // scale < LOD_COUNTRY：只显示国家（全图/概览）
     // LOD_COUNTRY <= scale < LOD_PROV_COARSE：省份粗档
     // scale >= LOD_PROV_COARSE：省份精档
-    LOD_COUNTRY: 0.5,
-    LOD_PROV_COARSE: 1.2,
+    LOD_COUNTRY: 1.0,
+    LOD_PROV_COARSE: 2.5,
 
     // === 图层 ===
     // layers.country / provL0 / provL1 各含 { paths, bbox }
