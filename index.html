@@ -121,7 +121,17 @@
         </div>
     </div>
 
+    <!-- 加载提示 -->
+    <div id="loadingOverlay" class="loading-overlay hidden">
+        <div class="loading-box">
+            <div class="loading-spinner"></div>
+            <p id="loadingText">正在加载世界地图…</p>
+        </div>
+    </div>
+
     <!-- 脚本 -->
+    <script src="vendor/d3.min.js"></script>
+    <script src="vendor/topojson-client.min.js"></script>
     <script src="js/data.js"></script>
     <script src="js/map.js"></script>
     <script src="js/game.js"></script>

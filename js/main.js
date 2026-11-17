@@ -25,9 +25,10 @@ const App = {
             this.renderCountryList();
         });
         document.getElementById('btnContinue').addEventListener('click', () => {
-            if (Game.load()) {
-                this.enterGame();
-            }
+            // 存档省份体系已更新，继续游戏以存档中的国家重新开局
+            const saved = Game.load();
+            this.pendingCountry = saved ? (Game.playerCountryId || 'germany') : 'germany';
+            this.enterGame();
         });
         document.getElementById('btnCredits').addEventListener('click', () => {
             document.getElementById('aboutBox').classList.remove('hidden');
@@ -52,7 +53,7 @@ const App = {
     },
 
     startGame(countryId) {
-        Game.newGame(countryId);
+        this.pendingCountry = countryId;
         this.enterGame();
     },
 
@@ -60,7 +61,12 @@ const App = {
         document.getElementById('startScreen').classList.remove('active');
         document.getElementById('gameScreen').classList.add('active');
 
-        // 初始化地图
+        // 显示加载遮罩
+        const loader = document.getElementById('loadingOverlay');
+        loader.classList.remove('hidden');
+        document.getElementById('loadingText').textContent = '正在加载世界地图…';
+
+        // 初始化地图（先建画布与事件，数据异步加载）
         const mapCanvas = document.getElementById('gameMap');
         const miniCanvas = document.createElement('canvas');
         miniCanvas.width = 180;
@@ -68,20 +74,31 @@ const App = {
         document.getElementById('minimapContainer').appendChild(miniCanvas);
 
         MapView.init(mapCanvas, miniCanvas, Game);
-        MapView.fitWorld();
-        MapView.draw();
 
-        // 初始化 UI
-        UI.init(Game);
-        UI.refreshAll();
+        // 异步加载矢量地图数据，加载完成后初始化游戏
+        MapView.loadData().then(() => {
+            // 数据就绪，构建省份与游戏状态
+            Game.newGame(this.pendingCountry);
+            // 首次绘制（此时省份归属已就绪）
+            MapView.fitWorld();
+            MapView.draw();
+            loader.classList.add('hidden');
 
-        // 开始游戏循环
-        this.lastTickTime = performance.now();
-        this.lastTime = performance.now();
-        this.tickAccumulator = 0;
-        this.uiAccumulator = 0;
-        this.gameRunning = true;
-        this.gameLoop(performance.now());
+            // 初始化 UI
+            UI.init(Game);
+            UI.refreshAll();
+
+            // 开始游戏循环
+            this.lastTickTime = performance.now();
+            this.lastTime = performance.now();
+            this.tickAccumulator = 0;
+            this.uiAccumulator = 0;
+            this.gameRunning = true;
+            this.gameLoop(performance.now());
+        }).catch(err => {
+            document.getElementById('loadingText').textContent = '地图加载失败：' + err.message;
+            console.error(err);
+        });
     },
 
     // ===================== 游戏循环 =====================

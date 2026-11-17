@@ -169,91 +169,80 @@ const PROVINCES = [
 ];
 
 /* ---------- 国家定义 ---------- */
-// 每个国家：id, name, 旗帜emoji, 主色, 意识形态, 起始属性, 所属省份id列表, AI人格
+// 每个国家：id, name, 旗帜emoji, 主色, 意识形态, ISO3代码, 起始属性, AI人格
+// 省份由 index.json 运行时按 owner === iso3 匹配确定
 const COUNTRIES = [
     {
-        id: 'germany', name: '德国', flag: '🇩🇪', color: '#b8504a', ideology: 'fascism',
+        id: 'germany', name: '德国', flag: '🇩🇪', color: '#b8504a', ideology: 'fascism', iso3: 'DEU',
         tag: 'GER', aiTags: ['aggressive', 'industry', 'tech_focus'],
         manpower: 40, factories: 32, civilianFactories: 20, militaryFactories: 12,
         stability: 85, warSupport: 80, population: 70,
-        provinces: ['eu_de', 'eu_pl', 'eu_cs', 'eu_au', 'eu_hu', 'eu_ro', 'eu_bg', 'eu_yu', 'eu_gr', 'me_irq', 'me_pal', 'me_syr'],
     },
     {
-        id: 'usa', name: '美国', flag: '🇺🇸', color: '#5d7fa8', ideology: 'democracy',
+        id: 'usa', name: '美国', flag: '🇺🇸', color: '#5d7fa8', ideology: 'democracy', iso3: 'USA',
         tag: 'USA', aiTags: ['industry', 'navy', 'tech_focus'],
         manpower: 100, factories: 60, civilianFactories: 45, militaryFactories: 15,
         stability: 95, warSupport: 70, population: 130,
-        provinces: ['us_w', 'us_c', 'us_e', 'us_s', 'na_ne'],
     },
     {
-        id: 'uk', name: '英国', flag: '🇬🇧', color: '#6a8aaa', ideology: 'democracy',
+        id: 'uk', name: '英国', flag: '🇬🇧', color: '#6a8aaa', ideology: 'democracy', iso3: 'GBR',
         tag: 'ENG', aiTags: ['navy', 'diplomacy', 'industry'],
         manpower: 35, factories: 28, civilianFactories: 18, militaryFactories: 10,
         stability: 90, warSupport: 75, population: 45,
-        provinces: ['eu_en', 'eu_nl'],
     },
     {
-        id: 'soviet', name: '苏联', flag: '🇨🇩', color: '#a8743f', ideology: 'communism',
+        id: 'soviet', name: '苏联', flag: '🇨🇩', color: '#a8743f', ideology: 'communism', iso3: 'RUS',
         tag: 'SOV', aiTags: ['industry', 'army', 'tech_focus'],
         manpower: 90, factories: 40, civilianFactories: 28, militaryFactories: 12,
         stability: 70, warSupport: 75, population: 120,
-        provinces: ['as_soviet_w', 'as_soviet_c', 'as_soviet_e', 'as_sib', 'eu_fi'],
     },
     {
-        id: 'japan', name: '日本', flag: '🇯🇵', color: '#c0504a', ideology: 'fascism',
+        id: 'japan', name: '日本', flag: '🇯🇵', color: '#c0504a', ideology: 'fascism', iso3: 'JPN',
         tag: 'JAP', aiTags: ['aggressive', 'navy', 'army'],
         manpower: 35, factories: 25, civilianFactories: 15, militaryFactories: 10,
         stability: 85, warSupport: 85, population: 50,
-        provinces: ['as_jp', 'as_kr', 'as_phi', 'as_til'],
     },
     {
-        id: 'france', name: '法国', flag: '🇫🇷', color: '#6a7a9a', ideology: 'democracy',
+        id: 'france', name: '法国', flag: '🇫🇷', color: '#6a7a9a', ideology: 'democracy', iso3: 'FRA',
         tag: 'FRA', aiTags: ['industry', 'army', 'diplomacy'],
         manpower: 38, factories: 30, civilianFactories: 20, militaryFactories: 10,
         stability: 88, warSupport: 72, population: 42,
-        provinces: ['eu_fr', 'eu_ib', 'eu_ch'],
     },
     {
-        id: 'italy', name: '意大利', flag: '🇮🇹', color: '#6a9a6a', ideology: 'fascism',
+        id: 'italy', name: '意大利', flag: '🇮🇹', color: '#6a9a6a', ideology: 'fascism', iso3: 'ITA',
         tag: 'ITA', aiTags: ['aggressive', 'industry'],
         manpower: 30, factories: 22, civilianFactories: 15, militaryFactories: 7,
         stability: 75, warSupport: 78, population: 38,
-        provinces: ['eu_it', 'eu_gr', 'eu_es2'],
     },
     {
-        id: 'china', name: '中国', flag: '🇨🇳', color: '#b5954a', ideology: 'democracy',
+        id: 'china', name: '中国', flag: '🇨🇳', color: '#b5954a', ideology: 'democracy', iso3: 'CHN',
         tag: 'CHI', aiTags: ['army', 'diplomacy'],
         manpower: 120, factories: 15, civilianFactories: 10, militaryFactories: 5,
         stability: 55, warSupport: 65, population: 200,
-        provinces: ['as_ch', 'as_mon', 'as_bur'],
     },
     {
-        id: 'spain', name: '西班牙', flag: '🇪🇸', color: '#a8504a', ideology: 'fascism',
+        id: 'spain', name: '西班牙', flag: '🇪🇸', color: '#a8504a', ideology: 'fascism', iso3: 'ESP',
         tag: 'SPA', aiTags: ['aggressive', 'army'],
         manpower: 28, factories: 18, civilianFactories: 12, militaryFactories: 6,
         stability: 65, warSupport: 70, population: 30,
-        provinces: ['eu_ib'],
     },
     {
-        id: 'india', name: '印度', flag: '🇮🇳', color: '#b8985a', ideology: 'democracy',
+        id: 'india', name: '印度', flag: '🇮🇳', color: '#b8985a', ideology: 'democracy', iso3: 'IND',
         tag: 'IND', aiTags: ['army', 'industry'],
         manpower: 80, factories: 18, civilianFactories: 12, militaryFactories: 6,
         stability: 70, warSupport: 65, population: 100,
-        provinces: ['as_ind'],
     },
     {
-        id: 'brazil', name: '巴西', flag: '🇧🇷', color: '#7a9a6a', ideology: 'democracy',
+        id: 'brazil', name: '巴西', flag: '🇧🇷', color: '#7a9a6a', ideology: 'democracy', iso3: 'BRA',
         tag: 'BRA', aiTags: ['industry'],
         manpower: 35, factories: 16, civilianFactories: 11, militaryFactories: 5,
         stability: 72, warSupport: 60, population: 40,
-        provinces: ['sa_c'],
     },
     {
-        id: 'australia', name: '澳大利亚', flag: '🇦🇺', color: '#5a7a9a', ideology: 'democracy',
+        id: 'australia', name: '澳大利亚', flag: '🇦🇺', color: '#5a7a9a', ideology: 'democracy', iso3: 'AUS',
         tag: 'AUS', aiTags: ['navy', 'army'],
         manpower: 15, factories: 12, civilianFactories: 8, militaryFactories: 4,
         stability: 85, warSupport: 70, population: 18,
-        provinces: ['oc_au', 'oc_nz'],
     },
 ];
 

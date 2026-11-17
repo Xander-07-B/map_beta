@@ -1,0 +1,24 @@
+{
+  "name": "map_beta",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xander-07-B/map_beta.git"
+  },
+  "keywords": [],
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Xander-07-B/map_beta/issues"
+  },
+  "homepage": "https://github.com/Xander-07-B/map_beta#readme",
+  "dependencies": {
+    "d3": "^7.9.2",
+    "d3-geo": "^3.1.2",
+    "topojson-client": "^3.1.0"
+  }
+}

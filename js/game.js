@@ -44,14 +44,8 @@ const Game = {
         this.unlockedTemplates = {};
         this.unlockedEquipment = {};
 
-        // 初始化省份运行时数据
-        this.provinces = PROVINCES.map(p => ({
-            ...p,
-            owner: null,          // 归属国家id
-            infrastructure: 0,
-            garrison: 0,
-            conqueredBy: null,
-        }));
+        // 从已加载的 index.json 构建真实地理省份
+        this.provinces = this.buildProvinces();
         // 重新映射省份id -> 对象
         this._provinceMap = {};
         for (const p of this.provinces) this._provinceMap[p.id] = p;
@@ -61,10 +55,16 @@ const Game = {
         for (const cdef of COUNTRIES) {
             this.countries[cdef.id] = this.initCountry(cdef);
         }
-        // 分配省份归属
+        // 分配省份归属：每个省份归属其 adm0_a3 对应的国家
+        const isoToCountryId = {};
+        for (const cdef of COUNTRIES) isoToCountryId[cdef.iso3] = cdef.id;
         for (const p of this.provinces) {
-            const ownerDef = COUNTRIES.find(c => c.provinces.includes(p.id));
-            p.owner = ownerDef ? ownerDef.id : null;
+            const cid = isoToCountryId[p.owner];
+            p.owner = cid || null;
+            if (cid) {
+                const c = this.countries[cid];
+                if (!c.provinces.includes(p.id)) c.provinces.push(p.id);
+            }
         }
 
         this.playerCountryId = countryId;
@@ -110,7 +110,7 @@ const Game = {
             population: cdef.population,
             civilianFactories: cdef.civilianFactories,
             militaryFactories: cdef.militaryFactories,
-            provinces: [...cdef.provinces],
+            provinces: [],       // 运行时按 iso3 匹配填充
             relations: {},       // 与其他国家关系
             alliances: [],       // 盟国id
             isPlayer: false,
@@ -138,6 +138,71 @@ const Game = {
         return stock;
     },
 
+    // ===================== 省份数据加载 =====================
+    loadProvinceData(index) {
+        this._provinceMeta = index.meta;
+        this._provinceNeighbors = index.neighbors;
+        this._provinceDataReady = true;
+    },
+
+    // 由 index.json 构建省份运行时对象（地形按纬度，资源按确定性哈希）
+    buildProvinces() {
+        if (!this._provinceMeta) return [];
+        const meta = this._provinceMeta;
+        const neighbors = this._provinceNeighbors || {};
+        const ids = Object.keys(meta).map(Number);
+        // 世界纵向范围用于纬度归一化
+        const ys = ids.map(id => meta[id].bbox[1]).concat(ids.map(id => meta[id].bbox[3]));
+        const yMin = Math.min(...ys), yMax = Math.max(...ys);
+        const provinces = [];
+        for (const id of ids) {
+            const m = meta[id];
+            const [x0, y0, x1, y1] = m.bbox;
+            const cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+            const latFactor = (cy - yMin) / (yMax - yMin || 1); // 0=北, 1=南
+            // 地形按纬度
+            let terrain;
+            if (latFactor < 0.18) terrain = 'tundra';
+            else if (latFactor < 0.38) terrain = 'forest';
+            else if (latFactor < 0.62) terrain = 'plain';
+            else if (latFactor < 0.82) terrain = 'forest';
+            else terrain = 'desert';
+            // 资源按确定性哈希（稳定，不随重载变化）
+            const h = (id * 2654435761) % 100000;
+            const resources = {
+                steel:     (((h >> 0) & 7) / 10 + 0.3) * 1.0,
+                iron:      (((h >> 4) & 7) / 10 + 0.3) * 1.0,
+                oil:       (((h >> 8) & 7) / 10 + 0.2) * 1.0,
+                rubber:    (((h >> 12) & 7) / 10 + 0.1) * 1.0,
+                energy:    (((h >> 16) & 7) / 10 + 0.3) * 1.0,
+                aluminium: (((h >> 20) & 7) / 10 + 0.2) * 1.0,
+            };
+            // 基础设施与人力按面积
+            const area = (x1 - x0) * (y1 - y0);
+            const infra = Math.min(100, 20 + area / 8000);
+            provinces.push({
+                id: id,
+                name: m.name,
+                owner: m.owner,        // adm0_a3（ISO3），newGame 时转为国家id
+                terrain,
+                resources,
+                infrastructure: infra,
+                garrison: 0,
+                bbox: m.bbox,
+                neighbors: neighbors[id] ? neighbors[id].map(Number) : [],
+            });
+        }
+        return provinces;
+    },
+
+    // 两国是否交战（用于前线绘制）
+    areAtWar(countryIdA, countryIdB) {
+        const ra = this.countries[countryIdA];
+        const rb = this.countries[countryIdB];
+        if (!ra || !rb) return false;
+        return (ra.relations[countryIdB] || 0) < -30 || (rb.relations[countryIdA] || 0) < -30;
+    },
+
     // ===================== 查询辅助 =====================
     playerCountry() { return this.countryById(this.playerCountryId); },
     countryById(id) { return this.countries[id] || null; },
@@ -159,10 +224,23 @@ const Game = {
         return this.provinces.filter(p => p.owner === countryId);
     },
 
+    // 邻接省份（来自 index.json 预计算的邻接表）
+    getNeighborProvinces(provinceId) {
+        const p = this.provinceById(provinceId);
+        if (!p || !p.neighbors) return [];
+        return p.neighbors.map(id => this.provinceById(id)).filter(Boolean);
+    },
+
     ownersOfProvince(provinceId) {
         const p = this.provinceById(provinceId);
         if (!p) return [];
         return this.armies.filter(a => a.provinceId === provinceId).map(a => a.owner);
+    },
+
+    // ISO3 → 国家id 映射
+    countryIdByIso3(iso3) {
+        const c = COUNTRIES.find(c => c.iso3 === iso3);
+        return c ? c.id : null;
     },
 
     // ===================== 时间系统 =====================
