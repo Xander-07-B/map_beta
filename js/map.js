@@ -8,15 +8,25 @@ const MapView = {
     canvas: null, ctx: null, miniCanvas: null, miniCtx: null, game: null,
 
     // === 数据 ===
-    topo: null,          // 省份 TopoJSON
+    topo: null,          // 省份 TopoJSON（精档 l1，用于拾取与前线）
+    topoL0: null,        // 省份 TopoJSON（粗档 l0）
     countriesTopo: null, // 国界 TopoJSON
     index: null,         // index.json (邻接 + 元数据)
     proj: null,          // d3 投影（加载时算一次）
     geoPath: null,       // d3.geoPath(proj)
 
+    // === LOD 阈值（按 scale 切换图层）===
+    // scale < LOD_COUNTRY：只显示国家
+    // LOD_COUNTRY <= scale < LOD_PROV_COARSE：省份粗档
+    // scale >= LOD_PROV_COARSE：省份精档
+    LOD_COUNTRY: 0.5,
+    LOD_PROV_COARSE: 1.2,
+
     // === 图层 ===
-    paths: null,          // Map<ne_id, Path2D>
-    bbox: null,           // Map<ne_id, [x0,y0,x1,y1]>  投影后世界坐标
+    // layers.country / provL0 / provL1 各含 { paths, bbox }
+    layers: { country: null, provL0: null, provL1: null },
+    paths: null,          // Map<ne_id, Path2D>  指向 provL1（拾取/军队/高亮用）
+    bbox: null,           // Map<ne_id, [x0,y0,x1,y1]>  指向 provL1
     seqIndex: null,       // Map<ne_id, number>  顺序索引（拾取用）
     countryBorderPath: null, // 国界 mesh 的 Path2D
     worldBounds: [0, 0, 0, 0], // 投影后世界范围
@@ -51,18 +61,25 @@ const MapView = {
         this.bbox = new Map();
         this.seqIndex = new Map();
         this.borderIndex = new Map();
+        this.layers = {
+            country: { paths: new Map(), bbox: new Map() },
+            provL0: { paths: new Map(), bbox: new Map() },
+            provL1: { paths: new Map(), bbox: new Map() },
+        };
         this.bindEvents();
         this.resize();
     },
 
     /* ===================== 数据加载 ===================== */
     async loadData() {
-        const [provRes, cntRes, idxRes] = await Promise.all([
+        const [provL0Res, provL1Res, cntRes, idxRes] = await Promise.all([
+            fetch('data/provinces.l0.topo.json').then(r => r.json()),
             fetch('data/provinces.l1.topo.json').then(r => r.json()),
             fetch('data/countries.l1.topo.json').then(r => r.json()),
             fetch('data/index.json').then(r => r.json()),
         ]);
-        this.topo = provRes;
+        this.topoL0 = provL0Res;
+        this.topo = provL1Res;          // 精档，用于拾取与前线
         this.countriesTopo = cntRes;
         this.index = idxRes;
         this.buildLayers();
@@ -91,24 +108,65 @@ const MapView = {
         this.proj = d3.geoMercator().fitSize([W, H], topojson.feature(this.topo, this.topo.objects[objName]));
         this.geoPath = d3.geoPath(this.proj);
 
-        const feats = topojson.feature(this.topo, this.topo.objects[objName]).features;
+        // 构建单个图层：用 topojson.feature() 转 GeoJSON，生成 Path2D + bbox
+        const buildLayer = (topo, objKey) => {
+            const obj = topo.objects[objKey];
+            const feats = topojson.feature(topo, obj).features;
+            const layer = { paths: new Map(), bbox: new Map() };
+            let gx0 = Infinity, gy0 = Infinity, gx1 = -Infinity, gy1 = -Infinity;
+            for (const f of feats) {
+                const id = f.id;
+                const d = this.geoPath(f);
+                if (!d) continue;
+                layer.paths.set(id, new Path2D(d));
+                const b = this.geoPath.bounds(f);
+                if (!b) continue;
+                const flat = [b[0][0], b[0][1], b[1][0], b[1][1]];
+                layer.bbox.set(id, flat);
+                gx0 = Math.min(gx0, flat[0]); gy0 = Math.min(gy0, flat[1]);
+                gx1 = Math.max(gx1, flat[2]); gy1 = Math.max(gy1, flat[3]);
+            }
+            return { layer, bounds: [gx0, gy0, gx1, gy1] };
+        };
+
+        const objNameL0 = Object.keys(this.topoL0.objects).find(k => this.topoL0.objects[k].type === 'GeometryCollection');
+        const cObjName = this.countryObjName();
+
+        // 国家图层
+        const cRes = buildLayer(this.countriesTopo, cObjName);
+        this.layers.country = cRes.layer;
+        // 省份粗档
+        const l0Res = buildLayer(this.topoL0, objNameL0);
+        this.layers.provL0 = l0Res.layer;
+        // 省份精档（同时作为拾取图层）
+        const l1Res = buildLayer(this.topo, objName);
+        this.layers.provL1 = l1Res.layer;
+
+        // 拾取/军队/高亮统一使用精档
+        this.paths = this.layers.provL1.paths;
+        this.bbox = this.layers.provL1.bbox;
+        // 顺序索引
+        this.seqIndex = new Map();
         let seq = 0;
-        let gx0 = Infinity, gy0 = Infinity, gx1 = -Infinity, gy1 = -Infinity;
-        for (const f of feats) {
-            const id = +f.id;
-            const d = this.geoPath(f);
-            if (!d) continue;
-            this.paths.set(id, new Path2D(d));
-            const b = this.geoPath.bounds(f);
-            if (!b) continue;
-            // bounds 格式为 [[x0,y0],[x1,y1]]，展平为 [x0,y0,x1,y1]
-            const flat = [b[0][0], b[0][1], b[1][0], b[1][1]];
-            this.bbox.set(id, flat);
-            this.seqIndex.set(id, seq++);
-            gx0 = Math.min(gx0, flat[0]); gy0 = Math.min(gy0, flat[1]);
-            gx1 = Math.max(gx1, flat[2]); gy1 = Math.max(gy1, flat[3]);
+        for (const id of this.paths.keys()) this.seqIndex.set(id, seq++);
+
+        // 世界范围取省份精档
+        this.worldBounds = l1Res.bounds;
+    },
+
+    // 国家配色：可玩国家用其定义色，其余按 ISO3 哈希生成稳定色
+    countryColor(iso3) {
+        if (!iso3) return '#2a3140';
+        const cid = this.game.countryIdByIso3(iso3);
+        if (cid) {
+            const c = this.game.countryById(cid);
+            if (c) return c.color;
         }
-        this.worldBounds = [gx0, gy0, gx1, gy1];
+        // 非可玩国家：确定性哈希生成低饱和色
+        let h = 0;
+        for (let i = 0; i < iso3.length; i++) h = (h * 31 + iso3.charCodeAt(i)) >>> 0;
+        const hue = h % 360;
+        return `hsl(${hue}, 32%, 42%)`;
     },
 
     /* ===================== 拾取网格 ===================== */
@@ -287,11 +345,27 @@ const MapView = {
         // 应用相机变换，进入世界坐标空间
         ctx.setTransform(this.scale * dpr, 0, 0, this.scale * dpr, this.offsetX * dpr, this.offsetY * dpr);
 
-        this.drawProvinces(ctx);
-        this.drawCountryBorders(ctx);
+        // === LOD 分层：按缩放比例选择渲染图层 ===
+        if (this.scale < this.LOD_COUNTRY) {
+            // 缩放小（看全貌）：只显示国家
+            this.drawCountryFills(ctx);
+            this.drawCountryBorders(ctx);
+        } else if (this.scale < this.LOD_PROV_COARSE) {
+            // 中等缩放：省份粗档
+            this.drawProvinceFills(ctx, this.layers.provL0);
+            this.drawProvinceBorders(ctx, this.layers.provL0);
+            this.drawCountryBorders(ctx);
+        } else {
+            // 放大：省份精档
+            this.drawProvinceFills(ctx, this.layers.provL1);
+            this.drawProvinceBorders(ctx, this.layers.provL1);
+            this.drawCountryBorders(ctx);
+        }
+
         this.drawFrontlines(ctx);
         this.drawArmies(ctx);
-        this.drawHighlights(ctx);
+        // 高亮仅在省份层级显示（国家级不画省份轮廓）
+        if (this.scale >= this.LOD_COUNTRY) this.drawHighlights(ctx);
 
         this.drawMinimap();
     },
@@ -300,11 +374,23 @@ const MapView = {
         return !(b[2] < view.x0 || b[0] > view.x1 || b[3] < view.y0 || b[1] > view.y1);
     },
 
-    drawProvinces(ctx) {
+    // 国家填充：按归属国配色
+    drawCountryFills(ctx) {
+        const view = this.viewRect();
+        const layer = this.layers.country;
+        for (const [iso3, path] of layer.paths) {
+            const b = layer.bbox.get(iso3);
+            if (!b || !this.inView(b, view)) continue;
+            ctx.fillStyle = this.countryColor(iso3);
+            ctx.fill(path);
+        }
+    },
+
+    drawProvinceFills(ctx, layer) {
         const view = this.viewRect();
         const game = this.game;
-        for (const [id, path] of this.paths) {
-            const b = this.bbox.get(id);
+        for (const [id, path] of layer.paths) {
+            const b = layer.bbox.get(id);
             if (!b || !this.inView(b, view)) continue;
             const owner = game.ownerOf(id);
             const color = owner ? (game.countryById(owner)?.color || '#555') : '#2a3140';
@@ -321,13 +407,13 @@ const MapView = {
         ctx.stroke(this.countryBorderPath);
     },
 
-    drawProvinceBorders(ctx) {
+    drawProvinceBorders(ctx, layer) {
         const view = this.viewRect();
         ctx.strokeStyle = 'rgba(10,14,20,0.35)';
         ctx.lineWidth = 0.6 / this.scale;
         ctx.lineJoin = 'round';
-        for (const [id, path] of this.paths) {
-            const b = this.bbox.get(id);
+        for (const [id, path] of layer.paths) {
+            const b = layer.bbox.get(id);
             if (!b || !this.inView(b, view)) continue;
             ctx.stroke(path);
         }
@@ -442,9 +528,10 @@ const MapView = {
         ctx.clearRect(0, 0, w, h);
         ctx.fillStyle = '#0b2545';
         ctx.fillRect(0, 0, w, h);
-        for (const [id, path] of this.paths) {
-            const owner = this.game.ownerOf(id);
-            ctx.fillStyle = owner ? (this.game.countryById(owner)?.color || '#555') : '#2a3140';
+        // 小地图用国家图层（轻量、清晰）
+        const cLayer = this.layers.country;
+        for (const [iso3, path] of cLayer.paths) {
+            ctx.fillStyle = this.countryColor(iso3);
             ctx.fill(path);
         }
         // 视口框
