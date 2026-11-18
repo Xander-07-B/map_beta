@@ -73,7 +73,14 @@ const UI = {
         if (!this.game || !this.game.state) return;
         this.updateTopBar();
         this.updateBottomBar();
-        this.renderPanel(this.currentPanel);
+        // 面板关闭时不要反复重建隐藏的 DOM；打开时保留滚动位置
+        const pm = document.getElementById('panelModal');
+        if (pm && !pm.classList.contains('hidden')) {
+            const content = document.getElementById('panelContent');
+            const scrollTop = content.scrollTop;
+            this.renderPanel(this.currentPanel);
+            content.scrollTop = scrollTop;
+        }
     },
 
     // ===================== 顶部栏 =====================

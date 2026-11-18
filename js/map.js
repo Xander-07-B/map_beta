@@ -21,6 +21,12 @@ const MapView = {
     // scale >= LOD_PROV_COARSE：省份精档
     LOD_COUNTRY: 2.0,
     LOD_PROV_COARSE: 4.8,
+    // 国家层级底图缓存向四周多渲染的比例：平移到 20% 视口内、
+    // 缩小到 1.4 倍以内都能直接复用旧图，不必每帧重绘整屏
+    COUNTRY_BASE_PAD: 0.2,
+    // 底图缓存的最大像素数：4K + 2x DPR 时整屏留白缓存会到 50MP，
+    // 超过这个值就降低离屏分辨率，控制显存占用
+    BASE_MAX_PIXELS: 20e6,
 
     // === 图层 ===
     // layers.country / provL0 / provL1 各含 { paths, bbox }
@@ -33,17 +39,68 @@ const MapView = {
     worldBounds: [0, 0, 0, 0], // 投影后世界范围
 
     // === 配色 ===
+    // 主题切换时只改变地图本身的底色与线条，国家/省份填充色保持不变，
+    // 避免切换主题后国家颜色「换了一套」影响识别。
     oceanColor: '#0b2545',
     landColor: '#2f3b33',    // 无归属省份的陆地底色（保证任何缩放都有颜色）
+    countryBorderColor: 'rgba(8,12,18,0.85)',
+    provinceBorderColor: 'rgba(10,14,20,0.45)',
+    coastGlowColor: 'rgba(130,155,180,0.5)',
+    coastColor: 'rgba(4,8,14,0.9)',
+    hoverStrokeColor: '#ffffff',
+    selectedStrokeColor: '#c9a96e',
+    miniViewportColor: '#c9a96e',
+    armyTextColor: '#ffffff',
+
+    THEME_PALETTES: {
+        dark: {
+            oceanColor: '#0b2545',
+            landColor: '#2f3b33',
+            countryBorderColor: 'rgba(8,12,18,0.85)',
+            provinceBorderColor: 'rgba(10,14,20,0.45)',
+            coastGlowColor: 'rgba(130,155,180,0.5)',
+            coastColor: 'rgba(4,8,14,0.9)',
+            hoverStrokeColor: '#ffffff',
+            selectedStrokeColor: '#c9a96e',
+            miniViewportColor: '#c9a96e',
+            armyTextColor: '#ffffff',
+        },
+        light: {
+            oceanColor: '#cbdff0',
+            landColor: '#e9eef5',
+            countryBorderColor: 'rgba(51,65,85,0.55)',
+            provinceBorderColor: 'rgba(100,116,139,0.42)',
+            coastGlowColor: 'rgba(255,255,255,0.8)',
+            coastColor: 'rgba(71,85,105,0.8)',
+            hoverStrokeColor: 'rgba(15,23,42,0.85)',
+            selectedStrokeColor: '#b07d2b',
+            miniViewportColor: '#b07d2b',
+            armyTextColor: '#12233c',
+        },
+    },
+    theme: 'dark',
 
     // === 填充缓存（颜色 × 空间网格，只绘制视口覆盖的格子）===
     _fillCaches: {},         // layerKey -> { version, cells, cols, rows, ... }
     _ownerVersion: 0,
     _drawPending: false,
     _miniCache: null,        // 小地图离屏缓存
+    _countryBaseCache: null, // 国家层级整屏底图缓存（海洋/陆地/国界/海岸线）
+    _countryBaseKey: '',
+    _countryBaseView: null,  // 缓存对应的世界视口矩形，用于缩放时的过渡贴图
+    _countryBaseVersion: -1, // 缓存对应的归属/配色版本
+    _countryBaseSize: null,  // 缓存对应的视口尺寸
+    _countryBaseScale: 0,    // 缓存对应的缩放比例（仅缩放时需要重建高清版）
+    _countryBaseMode: '',    // 'c' 国家层级 / 'p' 省份层级，跨层级不复用旧图
+    _renderCullView: null,   // 渲染底图缓存时用的裁剪范围（含四周留白）
+    _countryBaseTimer: 0,    // 交互结束后重建高清底图的定时器
+    _countryBaseForce: false,
+    _fillColorCache: new Map(), // 浅色主题下国家填充色的提亮结果缓存
 
     // === 拾取网格 ===
     grid: { cols: 0, rows: 0, cells: {} },
+    countryGrid: null,       // 国家层级拾取网格（仅低缩放时使用）
+    countryMeta: null,       // ISO3 -> { name }（标签下钻用）
 
     // === 前线索引 ===
     borderIndex: null,    // Map<"isoA|isoB", {path: Path2D, bbox}>
@@ -55,7 +112,7 @@ const MapView = {
     fitScale: 0.3, minScale: 0.25, maxScale: 24.0,
 
     // === 交互状态 ===
-    hoverProvince: null, selectedProvince: null,
+    hoverProvince: null, hoverCountry: null, selectedProvince: null,
     isDragging: false, isPinching: false,
     dragStartX: 0, dragStartY: 0, lastMouseX: 0, lastMouseY: 0,
     pinchStartDist: 0, pinchStartScale: 1, pinchMid: { x: 0, y: 0 },
@@ -78,6 +135,22 @@ const MapView = {
             provL0: { paths: new Map(), bbox: new Map() },
             provL1: { paths: new Map(), bbox: new Map() },
         };
+        this.hoverProvince = null;
+        this.hoverCountry = null;
+        this.selectedProvince = null;
+        this._fillCaches = {};
+        this._miniCache = null;
+        this._countryBaseCache = null;
+        this._countryBaseKey = '';
+        this._countryBaseView = null;
+        this._countryBaseVersion = -1;
+        this._countryBaseSize = null;
+        this._countryBaseScale = 0;
+        this._countryBaseMode = '';
+        this._renderCullView = null;
+        if (this._countryBaseTimer) { clearTimeout(this._countryBaseTimer); this._countryBaseTimer = 0; }
+        this._countryBaseForce = false;
+        this._fillColorCache.clear();
         this.bindEvents();
         this.resize();
     },
@@ -147,6 +220,14 @@ const MapView = {
         // 国家图层
         const cRes = buildLayer(this.countriesTopo, cObjName);
         this.layers.country = cRes.layer;
+        // 国家名称（Natural Earth 自带 NAME_ZH，低缩放悬停时显示国家而不是省份）
+        this.countryMeta = new Map();
+        for (const g of this.countriesTopo.objects[cObjName].geometries) {
+            const p = g.properties || {};
+            this.countryMeta.set(g.id, {
+                name: p.NAME_ZH || p.NAME_ZHT || p.NAME || p.ADMIN || g.id,
+            });
+        }
         // 省份粗档
         const l0Res = buildLayer(this.topoL0, objNameL0);
         this.layers.provL0 = l0Res.layer;
@@ -294,7 +375,7 @@ const MapView = {
     // 描边当前视口覆盖的 tile
     strokeLineTiles(ctx, tiles, color, widthPx) {
         if (!tiles) return;
-        const view = this.viewRect();
+        const view = this.cullView();
         const { wx0, wy0, cellW, cellH, cols, rows, paths } = tiles;
         const c0 = Math.max(0, Math.floor((view.x0 - wx0) / cellW));
         const c1 = Math.min(cols - 1, Math.floor((view.x1 - wx0) / cellW));
@@ -323,13 +404,13 @@ const MapView = {
         const cid = game ? game.countryIdByIso3(iso3) : null;
         if (cid) {
             const c = game.countryById(cid);
-            if (c) return c.color;
+            if (c) return this.themeFillColor(c.color);
         }
         // 非可玩国家：确定性哈希生成低饱和色
         let h = 0;
         for (let i = 0; i < iso3.length; i++) h = (h * 31 + iso3.charCodeAt(i)) >>> 0;
         const hue = h % 360;
-        return `hsl(${hue}, 32%, 42%)`;
+        return this.themeFillColor(`hsl(${hue}, 32%, 42%)`);
     },
 
     // 省份颜色：运行时归属国优先，其次原始 ISO3 国家色，最后陆地底色
@@ -340,7 +421,7 @@ const MapView = {
             const owner = game.ownerOf(id);
             if (owner) {
                 const c = game.countryById(owner);
-                if (c) return c.color;
+                if (c) return this.themeFillColor(c.color);
             }
         }
         const iso = this.index && this.index.meta[id] ? this.index.meta[id].owner : null;
@@ -351,6 +432,63 @@ const MapView = {
     invalidateFills() {
         this._ownerVersion++;
         this.requestDraw();
+    },
+
+    // 切换地图配色（深色 / 浅色）
+    setTheme(theme) {
+        const palette = this.THEME_PALETTES[theme];
+        if (!palette || this.theme === theme) return;
+        this.theme = theme;
+        Object.assign(this, palette);
+        // 国家填充色、底色、小地图和整屏底图都随主题变化，全部失效
+        this._ownerVersion++;
+        this._miniCache = null;
+        this._countryBaseKey = '';
+        if (this.ready) this.requestDraw();
+    },
+
+    // 浅色主题下的国家/省份填色：提高明度、略降饱和，
+    // 避免深色色块压在浅色地图上显得脏。深色主题原样返回。
+    themeFillColor(color) {
+        if (this.theme !== 'light' || !color) return color;
+        let out = this._fillColorCache.get(color);
+        if (out === undefined) {
+            out = this.lightenMapColor(color);
+            this._fillColorCache.set(color, out);
+        }
+        return out;
+    },
+
+    lightenMapColor(color) {
+        let h = 0, s = 0, l = 50;
+        if (color[0] === '#') {
+            let hex = color.slice(1);
+            if (hex.length === 3) hex = hex.split('').map(ch => ch + ch).join('');
+            if (hex.length !== 6) return color;
+            const r = parseInt(hex.slice(0, 2), 16) / 255;
+            const g = parseInt(hex.slice(2, 4), 16) / 255;
+            const b = parseInt(hex.slice(4, 6), 16) / 255;
+            const max = Math.max(r, g, b), min = Math.min(r, g, b);
+            l = (max + min) / 2;
+            if (max !== min) {
+                const d = max - min;
+                s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+                if (max === r) h = (g - b) / d + (g < b ? 6 : 0);
+                else if (max === g) h = (b - r) / d + 2;
+                else h = (r - g) / d + 4;
+                h *= 60;
+            }
+            s *= 100;
+            l *= 100;
+        } else {
+            const m = color.match(/^hsl\(\s*([\d.]+)\s*,\s*([\d.]+)%\s*,\s*([\d.]+)%\s*\)$/);
+            if (!m) return color;
+            h = +m[1]; s = +m[2]; l = +m[3];
+        }
+        // 明度压到 54%–72%，饱和度不超过 46%
+        l = Math.max(54, Math.min(72, 58 + (l - 42) * 0.45));
+        s = Math.min(s, 46);
+        return `hsl(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%)`;
     },
 
     // 省份填充按「颜色 × 空间网格」合并：
@@ -409,21 +547,30 @@ const MapView = {
     /* ===================== 拾取网格 ===================== */
     buildPicker() {
         const cols = 28, rows = 14;
-        this.grid = { cols, rows, cells: {} };
         const [x0, y0, x1, y1] = this.worldBounds;
         const cellW = (x1 - x0) / cols;
         const cellH = (y1 - y0) / rows;
-        for (const [id, b] of this.bbox) {
-            const c0 = Math.max(0, Math.floor((b[0] - x0) / cellW));
-            const c1 = Math.min(cols - 1, Math.floor((b[2] - x0) / cellW));
-            const r0 = Math.max(0, Math.floor((b[1] - y0) / cellH));
-            const r1 = Math.min(rows - 1, Math.floor((b[3] - y0) / cellH));
-            for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
-                const key = r * cols + c;
-                if (!this.grid.cells[key]) this.grid.cells[key] = [];
-                this.grid.cells[key].push(id);
+
+        const fillGrid = (source, target, pick) => {
+            for (const [id, b] of source) {
+                const c0 = Math.max(0, Math.floor((b[0] - x0) / cellW));
+                const c1 = Math.min(cols - 1, Math.floor((b[2] - x0) / cellW));
+                const r0 = Math.max(0, Math.floor((b[1] - y0) / cellH));
+                const r1 = Math.min(rows - 1, Math.floor((b[3] - y0) / cellH));
+                for (let r = r0; r <= r1; r++) for (let c = c0; c <= c1; c++) {
+                    const key = r * cols + c;
+                    if (!target.cells[key]) target.cells[key] = [];
+                    target.cells[key].push(pick(id));
+                }
             }
-        }
+        };
+
+        this.grid = { cols, rows, cells: {} };
+        fillGrid(this.bbox, this.grid, id => id);
+
+        // 国家图层同样建网格：低缩放时按国家拾取，避免拾取到未显示的省份
+        this.countryGrid = { cols, rows, cells: {} };
+        fillGrid(this.layers.country.bbox, this.countryGrid, id => id);
     },
 
     findProvinceAt(wx, wy) {
@@ -443,6 +590,24 @@ const MapView = {
             if (path && ctx.isPointInPath(path, wx, wy)) {
                 return this.game.provinceById(id);
             }
+        }
+        return null;
+    },
+
+    findCountryAt(wx, wy) {
+        if (!this.ready || !this.countryGrid) return null;
+        const [x0, y0, x1, y1] = this.worldBounds;
+        if (wx < x0 || wy < y0 || wx > x1 || wy > y1) return null;
+        const { cols, rows, cells } = this.countryGrid;
+        const cx = Math.floor((wx - x0) / ((x1 - x0) / cols));
+        const cy = Math.floor((wy - y0) / ((y1 - y0) / rows));
+        const candidates = cells[cy * cols + cx];
+        if (!candidates) return null;
+        const ctx = this.ctx;
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        for (const iso of candidates) {
+            const path = this.layers.country.paths.get(iso);
+            if (path && ctx.isPointInPath(path, wx, wy)) return iso;
         }
         return null;
     },
@@ -600,17 +765,46 @@ const MapView = {
     /* ===================== 主绘制 ===================== */
     draw() {
         if (!this.ctx || !this.ready) return;
-        const ctx = this.ctx;
-        const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-        // 海洋背景
-        ctx.fillStyle = this.oceanColor;
-        ctx.fillRect(0, 0, this.viewW, this.viewH);
+        this.drawMapLevel(this.ctx, Math.min(window.devicePixelRatio || 1, 2));
+    },
 
-        // 应用相机变换，进入世界坐标空间
-        ctx.setTransform(this.scale * dpr, 0, 0, this.scale * dpr, this.offsetX * dpr, this.offsetY * dpr);
+    // 全缩放层级共用整屏底图缓存：
+    // 海洋/陆地/国家与省份填充/国界省界/海岸线这些静态内容只在相机、
+    // 主题或归属变化时重绘；悬停、军队、前线动画每帧作为动态图层叠加。
+    // 全图概览时 250 国填充 + 整条海岸线每帧重绘要 30ms+，
+    // 省份层级的中等缩放同样会被精细海岸线拖到 30fps。
+    drawMapLevel(ctx, dpr) {
+        const countryMode = this.scale < this.LOD_COUNTRY;
+        const key = [
+            countryMode ? 'c' : 'p',
+            this.scale, this.offsetX, this.offsetY, this.viewW, this.viewH, dpr,
+            this._ownerVersion, this.oceanColor, this.landColor,
+            this.countryBorderColor, this.provinceBorderColor,
+            this.coastGlowColor, this.coastColor,
+        ].join('|');
+        const cache = this._countryBaseCache;
+        const size = this._countryBaseSize;
+        const sizeMatch = size && size.w === this.viewW && size.h === this.viewH && size.dpr === dpr;
 
-        // 只绘制视口范围内的内容：所有图层都被裁剪到主界面可见区域
+        if (cache && this._countryBaseKey === key) {
+            this.blitCountryBase(ctx, dpr);
+        } else if (cache && sizeMatch && !this._countryBaseForce &&
+                   this._countryBaseVersion === this._ownerVersion &&
+                   this._countryBaseMode === (countryMode ? 'c' : 'p') &&
+                   this.canPreviewCountryBase()) {
+            // 连续缩放时先把旧底图拉伸贴上去，等交互停下后再重绘清晰版本，
+            // 避免滚轮每动一下都同步重绘整屏海岸线。
+            this.drawCountryBasePreview(ctx, dpr);
+            this.scheduleCountryBaseRefresh();
+        } else {
+            this._countryBaseForce = false;
+            this.renderMapBase(dpr, key, countryMode);
+            this.blitCountryBase(ctx, dpr);
+        }
+
+        // 动态图层（前线 / 驻军 / 悬停高亮）仍按相机变换绘制
+        ctx.setTransform(this.scale * dpr, 0, 0, this.scale * dpr,
+                         this.offsetX * dpr, this.offsetY * dpr);
         const view = this.viewRect();
         const pad = 3 / this.scale;
         ctx.save();
@@ -618,44 +812,140 @@ const MapView = {
         ctx.rect(view.x0 - pad, view.y0 - pad,
                  (view.x1 - view.x0) + pad * 2, (view.y1 - view.y0) + pad * 2);
         ctx.clip();
-
-        // === LOD 分层：按缩放比例选择渲染图层 ===
-        if (this.scale < this.LOD_COUNTRY) {
-            // 缩放小（看全貌）：只显示国家
-            // 先用合并陆地底色铺满，保证任何缺口都不会露出海洋色
-            if (this.landBasePath) {
-                ctx.fillStyle = this.landColor;
-                ctx.fill(this.landBasePath);
-            }
-            this.drawCountryFills(ctx);
-            this.drawCountryBorders(ctx);
-        } else if (this.scale < this.LOD_PROV_COARSE) {
-            // 中等缩放：省份粗档
-            // 先铺国家底色：admin-1 数据没有覆盖到 80+ 个国家（瑞士、台湾等），
-            // 不铺底的话这些国家在省份 LOD 下会变成海洋色（看起来“消失”）
-            this.drawCountryFills(ctx);
-            this.drawProvinceFills(ctx, 'l0', this.layers.provL0);
-            this.drawProvinceBorders(ctx, 'provL0');
-            this.drawCountryBorders(ctx);
-        } else {
-            // 放大：省份精档（同样先铺国家底色兜底）
-            this.drawCountryFills(ctx);
-            this.drawProvinceFills(ctx, 'l1', this.layers.provL1);
-            this.drawProvinceBorders(ctx, 'provL1');
-            this.drawCountryBorders(ctx);
-        }
-
-        // 海岸线：让地图外轮廓清晰可见
-        this.drawCoastline(ctx);
-
         this.drawFrontlines(ctx);
         this.drawArmies(ctx);
-        // 高亮仅在省份层级显示（国家级不画省份轮廓）
-        if (this.scale >= this.LOD_COUNTRY) this.drawHighlights(ctx);
-
+        if (countryMode) this.drawCountryHover(ctx);
+        else this.drawHighlights(ctx);
         ctx.restore();
 
         this.drawMinimap();
+    },
+
+    // 缓存范围比视口向四周各多 COUNTRY_BASE_PAD 个视口尺寸，
+    // 这样小平移/小缩放可以直接贴旧图过渡
+    countryBaseRect() {
+        const v = this.viewRect();
+        const m = this.COUNTRY_BASE_PAD;
+        const ex = this.viewW * m / this.scale;
+        const ey = this.viewH * m / this.scale;
+        return { x0: v.x0 - ex, y0: v.y0 - ey, x1: v.x1 + ex, y1: v.y1 + ey };
+    },
+
+    // 把缓存画回主画布：缓存左上角对应屏幕坐标 (-padW, -padH)
+    blitCountryBase(ctx, dpr) {
+        const c = this._countryBaseCache;
+        if (!c) return;
+        const m = this.COUNTRY_BASE_PAD;
+        const w = this.viewW * (1 + 2 * m);
+        const h = this.viewH * (1 + 2 * m);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.drawImage(c, 0, 0, c.width, c.height,
+                      -this.viewW * m, -this.viewH * m, w, h);
+    },
+
+    renderMapBase(dpr, key, countryMode) {
+        if (!this._countryBaseCache) this._countryBaseCache = document.createElement('canvas');
+        const c = this._countryBaseCache;
+        const m = this.COUNTRY_BASE_PAD;
+        const cssW = this.viewW * (1 + 2 * m);
+        const cssH = this.viewH * (1 + 2 * m);
+        const wantPx = cssW * cssH * dpr * dpr;
+        const baseDpr = dpr * Math.min(1, Math.sqrt(this.BASE_MAX_PIXELS / Math.max(1, wantPx)));
+        c.width = Math.max(1, Math.round(cssW * baseDpr));
+        c.height = Math.max(1, Math.round(cssH * baseDpr));
+        const g = c.getContext('2d');
+        g.setTransform(baseDpr, 0, 0, baseDpr, 0, 0);
+        g.fillStyle = this.oceanColor;
+        g.fillRect(0, 0, cssW, cssH);
+        // 缓存贴回主画布时左上角位于 (-pad, -pad)，所以缓存内部的世界原点
+        // 要再向右下补回同样距离，保证贴图与屏幕坐标严格对齐
+        g.setTransform(this.scale * baseDpr, 0, 0, this.scale * baseDpr,
+                       (this.offsetX + this.viewW * m) * baseDpr,
+                       (this.offsetY + this.viewH * m) * baseDpr);
+
+        const view = this.countryBaseRect();
+        const pad = 3 / this.scale;
+        g.save();
+        g.beginPath();
+        g.rect(view.x0 - pad, view.y0 - pad,
+               (view.x1 - view.x0) + pad * 2, (view.y1 - view.y0) + pad * 2);
+        g.clip();
+        // 填充/描边按“视口 + 四周留白”的范围裁剪，否则缓存边缘那一圈
+        // 平移进来时会缺色
+        this._renderCullView = view;
+
+        if (countryMode) {
+            // 陆地底色兜底，保证海洋与国界之间不会露出缝隙
+            if (this.landBasePath) {
+                g.fillStyle = this.landColor;
+                g.fill(this.landBasePath);
+            }
+            this.drawCountryFills(g);
+            this.drawCountryBorders(g);
+        } else {
+            // 省份层级：先铺国家底色兜底（admin-1 未覆盖的国家不会露出海洋色），
+            // 再按缩放选省份粗档 / 精档
+            this.drawCountryFills(g);
+            if (this.scale < this.LOD_PROV_COARSE) {
+                this.drawProvinceFills(g, 'l0', this.layers.provL0);
+                this.drawProvinceBorders(g, 'provL0');
+            } else {
+                this.drawProvinceFills(g, 'l1', this.layers.provL1);
+                this.drawProvinceBorders(g, 'provL1');
+            }
+            this.drawCountryBorders(g);
+        }
+        this.drawCoastline(g);
+        g.restore();
+        this._renderCullView = null;
+
+        this._countryBaseKey = key;
+        this._countryBaseVersion = this._ownerVersion;
+        this._countryBaseView = view;
+        this._countryBaseSize = { w: this.viewW, h: this.viewH, dpr };
+        this._countryBaseScale = this.scale;
+        this._countryBaseMode = countryMode ? 'c' : 'p';
+    },
+
+    // 渲染底图时用包含留白的范围做裁剪，其余时候就是屏幕视口
+    cullView() {
+        return this._renderCullView || this.viewRect();
+    },
+
+    // 新视口完全落在旧缓存覆盖的世界范围内时，才能安全地用旧图过渡
+    canPreviewCountryBase() {
+        const old = this._countryBaseView;
+        if (!old) return false;
+        const v = this.viewRect();
+        const eps = 0.5 / this.scale;
+        return v.x0 >= old.x0 - eps && v.y0 >= old.y0 - eps &&
+               v.x1 <= old.x1 + eps && v.y1 <= old.y1 + eps;
+    },
+
+    drawCountryBasePreview(ctx, dpr) {
+        const old = this._countryBaseView;
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        ctx.fillStyle = this.oceanColor;
+        ctx.fillRect(0, 0, this.viewW, this.viewH);
+        const a = this.worldToScreen(old.x0, old.y0);
+        const b = this.worldToScreen(old.x1, old.y1);
+        const c = this._countryBaseCache;
+        ctx.drawImage(c, 0, 0, c.width, c.height,
+                      a.x, a.y, b.x - a.x, b.y - a.y);
+    },
+
+    scheduleCountryBaseRefresh() {
+        // 纯平移时旧图与当前帧是 1:1 的，内容完全正确，无需重建；
+        // 只有缩放（贴图被拉伸）才需要在停手后补一帧清晰底图。
+        if (this._countryBaseScale === this.scale &&
+            this._countryBaseVersion === this._ownerVersion &&
+            this._countryBaseMode === (this.scale < this.LOD_COUNTRY ? 'c' : 'p')) return;
+        if (this._countryBaseTimer) clearTimeout(this._countryBaseTimer);
+        this._countryBaseTimer = setTimeout(() => {
+            this._countryBaseTimer = 0;
+            this._countryBaseForce = true;
+            this.requestDraw();
+        }, 120);
     },
 
     inView(b, view) {
@@ -664,7 +954,7 @@ const MapView = {
 
     // 国家填充：按归属国配色
     drawCountryFills(ctx) {
-        const view = this.viewRect();
+        const view = this.cullView();
         const layer = this.layers.country;
         for (const [iso3, path] of layer.paths) {
             const b = layer.bbox.get(iso3);
@@ -676,7 +966,7 @@ const MapView = {
 
     drawProvinceFills(ctx, layerKey, layer) {
         const chunk = this.fillChunks(layerKey, layer);
-        const view = this.viewRect();
+        const view = this.cullView();
         const { wx0, wy0, cellW, cellH, cols, rows, cells } = chunk;
         // 只遍历视口覆盖的网格单元
         const c0 = Math.max(0, Math.floor((view.x0 - wx0) / cellW));
@@ -697,12 +987,12 @@ const MapView = {
 
     drawCountryBorders(ctx) {
         this.strokeLineTiles(ctx, this.lineTiles && this.lineTiles.country,
-                             'rgba(8,12,18,0.85)', 1.6);
+                             this.countryBorderColor, 1.6);
     },
 
     drawProvinceBorders(ctx, layerKey) {
         this.strokeLineTiles(ctx, this.lineTiles && this.lineTiles[layerKey],
-                             'rgba(10,14,20,0.45)', 0.6);
+                             this.provinceBorderColor, 0.6);
     },
 
     drawCoastline(ctx) {
@@ -712,11 +1002,11 @@ const MapView = {
         const key = this.scale < this.LOD_COUNTRY ? 'coastCountry'
                   : this.scale < this.LOD_PROV_COARSE ? 'coastL0'
                   : 'coastL1';
-        // 浅色光晕只用于全图概览，避免中高缩放下同一条线描两遍
+        // 光晕只用于全图概览，避免中高缩放下同一条线描两遍
         if (this.scale < this.LOD_COUNTRY) {
-            this.strokeLineTiles(ctx, this.lineTiles[key], 'rgba(130,155,180,0.5)', 2.8);
+            this.strokeLineTiles(ctx, this.lineTiles[key], this.coastGlowColor, 2.8);
         }
-        this.strokeLineTiles(ctx, this.lineTiles[key], 'rgba(4,8,14,0.9)', 1.3);
+        this.strokeLineTiles(ctx, this.lineTiles[key], this.coastColor, 1.3);
     },
 
     drawFrontlines(ctx) {
@@ -759,7 +1049,7 @@ const MapView = {
             if (!b) continue;
             const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
             const owner = game.countryById(g.owner);
-            const color = owner ? owner.color : '#fff';
+            const color = owner ? this.themeFillColor(owner.color) : '#fff';
             const size = Math.max(5, Math.min(16, 4 + g.count / 4)) / this.scale;
             ctx.fillStyle = color;
             ctx.strokeStyle = '#000';
@@ -769,7 +1059,7 @@ const MapView = {
             ctx.fill();
             ctx.stroke();
             if (this.scale > 0.5) {
-                ctx.fillStyle = '#fff';
+                ctx.fillStyle = this.armyTextColor;
                 ctx.font = `bold ${9 / this.scale}px sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.fillText(Math.round(g.count), cx, cy + 3 / this.scale);
@@ -777,12 +1067,22 @@ const MapView = {
         }
     },
 
+    // 低缩放只显示国家：悬停高亮整个国家轮廓
+    drawCountryHover(ctx) {
+        if (!this.hoverCountry) return;
+        const path = this.layers.country.paths.get(this.hoverCountry);
+        if (!path) return;
+        ctx.strokeStyle = this.hoverStrokeColor;
+        ctx.lineWidth = 2 / this.scale;
+        ctx.stroke(path);
+    },
+
     drawHighlights(ctx) {
         // 悬停高亮
         if (this.hoverProvince) {
             const path = this.paths.get(this.hoverProvince.id);
             if (path) {
-                ctx.strokeStyle = '#fff';
+                ctx.strokeStyle = this.hoverStrokeColor;
                 ctx.lineWidth = 2 / this.scale;
                 ctx.stroke(path);
             }
@@ -791,7 +1091,7 @@ const MapView = {
         if (this.selectedProvince) {
             const path = this.paths.get(this.selectedProvince);
             if (path) {
-                ctx.strokeStyle = '#c9a96e';
+                ctx.strokeStyle = this.selectedStrokeColor;
                 ctx.lineWidth = 3 / this.scale;
                 ctx.stroke(path);
             }
@@ -850,7 +1150,7 @@ const MapView = {
         // 视口框
         const v0 = this.screenToWorld(0, 0);
         const v1 = this.screenToWorld(this.viewW, this.viewH);
-        ctx.strokeStyle = '#c9a96e';
+        ctx.strokeStyle = this.miniViewportColor;
         ctx.lineWidth = 1;
         ctx.strokeRect(v0.x * s + ox, v0.y * s + oy, (v1.x - v0.x) * s, (v1.y - v0.y) * s);
     },
@@ -861,7 +1161,11 @@ const MapView = {
         c.addEventListener('mousedown', (e) => this.onMouseDown(e));
         c.addEventListener('mousemove', (e) => this.onMouseMove(e));
         c.addEventListener('mouseup', (e) => this.onMouseUp(e));
-        c.addEventListener('mouseleave', () => { this.hoverProvince = null; this.hideTooltip(); });
+        c.addEventListener('mouseleave', () => {
+            this.hoverProvince = null;
+            this.hoverCountry = null;
+            this.hideTooltip();
+        });
         c.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
         c.addEventListener('dblclick', (e) => this.onDoubleClick(e));
         c.addEventListener('touchstart', (e) => this.onTouchStart(e), { passive: false });
@@ -902,6 +1206,25 @@ const MapView = {
         }
         if (!this.ready) return;
         const world = this.screenToWorld(pos.x, pos.y);
+
+        // 低缩放只画国家：按国家拾取，避免提示未显示的省份
+        if (this.scale < this.LOD_COUNTRY) {
+            const prev = this.hoverCountry;
+            const iso = this.findCountryAt(world.x, world.y);
+            this.hoverCountry = iso;
+            this.hoverProvince = null;
+            if (iso !== prev) this.requestDraw();
+            if (iso) {
+                this.showCountryTooltip(iso, pos);
+                this.canvas.style.cursor = 'pointer';
+            } else {
+                this.hideTooltip();
+                this.canvas.style.cursor = 'grab';
+            }
+            return;
+        }
+
+        this.hoverCountry = null;
         const prevHover = this.hoverProvince ? this.hoverProvince.id : null;
         const prov = this.findProvinceAt(world.x, world.y);
         this.hoverProvince = prov;
@@ -924,6 +1247,8 @@ const MapView = {
         this.isDragging = false;
         this.canvas.style.cursor = 'grab';
         if (moved < 4) {
+            // 国家级 LOD 下省份未显示，不选中隐藏的省份
+            if (this.scale < this.LOD_COUNTRY) return;
             const pos = this.getMousePos(e);
             const world = this.screenToWorld(pos.x, pos.y);
             const prov = this.findProvinceAt(world.x, world.y);
@@ -942,6 +1267,10 @@ const MapView = {
         this.offsetX = pos.x - worldBefore.x * newScale;
         this.offsetY = pos.y - worldBefore.y * newScale;
         this.scale = newScale;
+        // 缩放可能跨过 LOD 分界，旧的悬停目标已失效
+        this.hoverProvince = null;
+        this.hoverCountry = null;
+        this.hideTooltip();
         this.clampCamera();
         this.requestDraw();
     },
@@ -949,6 +1278,18 @@ const MapView = {
     onDoubleClick(e) {
         const pos = this.getMousePos(e);
         const world = this.screenToWorld(pos.x, pos.y);
+
+        if (this.scale < this.LOD_COUNTRY) {
+            // 概览双击国家：放大到该国家范围
+            const iso = this.findCountryAt(world.x, world.y);
+            const b = iso && this.layers.country.bbox.get(iso);
+            if (b) {
+                this.centerOn((b[0] + b[2]) / 2, (b[1] + b[3]) / 2,
+                              Math.max(this.LOD_COUNTRY + 0.2, this.scale * 2));
+            }
+            return;
+        }
+
         const prov = this.findProvinceAt(world.x, world.y);
         if (prov) {
             const b = this.bbox.get(prov.id);
@@ -1013,6 +1354,17 @@ const MapView = {
             const t = touches[0];
             const pos = this.getPos(t.clientX, t.clientY);
             const world = this.screenToWorld(pos.x, pos.y);
+            if (this.scale < this.LOD_COUNTRY) {
+                const iso = this.findCountryAt(world.x, world.y);
+                this.hoverCountry = iso;
+                this.hoverProvince = null;
+                if (iso) {
+                    this.showCountryTooltip(iso, pos);
+                    this.requestDraw();
+                } else this.hideTooltip();
+                return;
+            }
+            this.hoverCountry = null;
             const prov = this.findProvinceAt(world.x, world.y);
             this.hoverProvince = prov;
             if (prov) {
@@ -1043,7 +1395,7 @@ const MapView = {
             } else { cx = this.lastMouseX; cy = this.lastMouseY; }
             const moved = Math.abs(cx - this.dragStartX) + Math.abs(cy - this.dragStartY);
             this.isDragging = false;
-            if (moved < 8) {
+            if (moved < 8 && this.scale >= this.LOD_COUNTRY) {
                 const pos = this.getPos(cx, cy);
                 const world = this.screenToWorld(pos.x, pos.y);
                 const prov = this.findProvinceAt(world.x, world.y);
@@ -1063,13 +1415,18 @@ const MapView = {
     },
 
     /* ===================== tooltip ===================== */
-    showTooltip(prov, pos) {
+    tooltipEl() {
         let tip = document.getElementById('tooltip');
         if (!tip) {
             tip = document.createElement('div');
             tip.id = 'tooltip';
             document.body.appendChild(tip);
         }
+        return tip;
+    },
+
+    showTooltip(prov, pos) {
+        const tip = this.tooltipEl();
         const owner = this.game.ownerOf(prov.id);
         const ownerName = owner ? this.game.countryDisplayName(owner) : '无主';
         tip.innerHTML = `<b>${prov.name}</b><br/>归属：${ownerName}`;
@@ -1077,6 +1434,17 @@ const MapView = {
         tip.style.left = (pos.x + 14) + 'px';
         tip.style.top = (pos.y + 14) + 'px';
     },
+
+    // 低缩放下的国家提示（Natural Earth 数据自带中文名）
+    showCountryTooltip(iso, pos) {
+        const tip = this.tooltipEl();
+        const meta = this.countryMeta && this.countryMeta.get(iso);
+        tip.innerHTML = `<b>${meta ? meta.name : iso}</b><br/>国家`;
+        tip.style.display = 'block';
+        tip.style.left = (pos.x + 14) + 'px';
+        tip.style.top = (pos.y + 14) + 'px';
+    },
+
     hideTooltip() {
         const tip = document.getElementById('tooltip');
         if (tip) tip.style.display = 'none';

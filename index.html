@@ -4,19 +4,94 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚔</text></svg>">
-    <title>钢铁雄心4 · 网页版</title>
+    <title>随便地图 · beta</title>
+    <script>
+        // 尽早确定主题，避免刷新时先闪一下深色界面
+        (function () {
+            try {
+                var saved = localStorage.getItem('hoi4_theme');
+                document.documentElement.dataset.theme = saved === 'light' ? 'light' : 'dark';
+            } catch (e) {
+                document.documentElement.dataset.theme = 'dark';
+            }
+        })();
+    </script>
     <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
     <!-- 启动菜单 -->
     <div id="startScreen" class="screen active">
+        <button id="startThemeToggle" class="theme-toggle" data-theme-toggle
+                type="button" aria-label="切换主题" title="切换到浅色主题">☀</button>
+        <!-- 背景装饰：线路与站点 -->
+        <svg class="start-decor" viewBox="0 0 1000 900" aria-hidden="true">
+            <defs>
+                <linearGradient id="decorBlue" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="#3b82f6" stop-opacity="0"/>
+                    <stop offset=".45" stop-color="#3b82f6" stop-opacity=".6"/>
+                    <stop offset="1" stop-color="#60a5fa" stop-opacity=".12"/>
+                </linearGradient>
+                <linearGradient id="decorTeal" x1="0" y1="1" x2="1" y2="0">
+                    <stop offset="0" stop-color="#2dd4bf" stop-opacity="0"/>
+                    <stop offset=".5" stop-color="#2dd4bf" stop-opacity=".45"/>
+                    <stop offset="1" stop-color="#2dd4bf" stop-opacity=".1"/>
+                </linearGradient>
+                <linearGradient id="decorGold" x1="0" y1="0" x2="1" y2="1">
+                    <stop offset="0" stop-color="#fbbf24" stop-opacity="0"/>
+                    <stop offset=".5" stop-color="#fbbf24" stop-opacity=".4"/>
+                    <stop offset="1" stop-color="#fb923c" stop-opacity=".1"/>
+                </linearGradient>
+                <radialGradient id="decorGlow">
+                    <stop offset="0" stop-color="#3b82f6" stop-opacity=".2"/>
+                    <stop offset="1" stop-color="#3b82f6" stop-opacity="0"/>
+                </radialGradient>
+            </defs>
+            <circle cx="560" cy="450" r="430" fill="url(#decorGlow)"/>
+            <g fill="none" stroke-linecap="round">
+                <path d="M40 700 C 260 600, 300 400, 540 430 S 840 300, 1020 340"
+                      stroke="url(#decorBlue)" stroke-width="4"/>
+                <path d="M120 220 C 320 280, 340 540, 580 570 S 860 700, 1030 650"
+                      stroke="url(#decorTeal)" stroke-width="3" opacity=".85"/>
+                <path d="M-20 470 C 200 500, 400 270, 660 300 S 900 470, 1040 430"
+                      stroke="url(#decorGold)" stroke-width="3" opacity=".75"/>
+            </g>
+            <g fill="#081120" stroke-width="3">
+                <circle cx="250" cy="633" r="7" stroke="#3b82f6"/>
+                <circle cx="414" cy="463" r="7" stroke="#3b82f6"/>
+                <circle cx="540" cy="430" r="9" stroke="#60a5fa"/>
+                <circle cx="790" cy="345" r="7" stroke="#3b82f6"/>
+                <circle cx="330" cy="330" r="6" stroke="#2dd4bf"/>
+                <circle cx="580" cy="570" r="9" stroke="#2dd4bf"/>
+                <circle cx="820" cy="668" r="6" stroke="#2dd4bf"/>
+                <circle cx="200" cy="490" r="6" stroke="#fbbf24"/>
+                <circle cx="660" cy="300" r="8" stroke="#fbbf24"/>
+                <circle cx="930" cy="452" r="6" stroke="#fb923c"/>
+            </g>
+            <g fill="none" stroke="rgba(148,163,184,0.12)" stroke-width="1">
+                <circle cx="560" cy="450" r="300"/>
+                <circle cx="560" cy="450" r="180"/>
+            </g>
+        </svg>
+
         <div class="start-menu">
-            <h1 class="game-title">钢铁雄心 <span class="title-4">IV</span></h1>
+            <h1 class="game-title">随便地图 <span class="title-4">IV</span></h1>
             <p class="subtitle">网页策略版 · 单人模式</p>
             <div class="menu-buttons">
-                <button id="btnNewGame" class="menu-btn">新游戏</button>
-                <button id="btnContinue" class="menu-btn" disabled>继续游戏</button>
-                <button id="btnCredits" class="menu-btn">关于</button>
+                <button id="btnNewGame" class="menu-btn primary">
+                    <span class="mb-icon">▶</span>
+                    <span class="mb-label">新游戏</span>
+                    <span class="mb-arrow">›</span>
+                </button>
+                <button id="btnContinue" class="menu-btn" disabled>
+                    <span class="mb-icon">⏱</span>
+                    <span class="mb-label">继续游戏</span>
+                    <span class="mb-arrow">›</span>
+                </button>
+                <button id="btnCredits" class="menu-btn">
+                    <span class="mb-icon">ⓘ</span>
+                    <span class="mb-label">关于</span>
+                    <span class="mb-arrow">›</span>
+                </button>
             </div>
             <div id="countrySelect" class="country-select hidden">
                 <h3>选择国家</h3>
@@ -24,7 +99,7 @@
             </div>
             <div id="aboutBox" class="about-box hidden">
                 <h3>关于</h3>
-                <p>《钢铁雄心4》网页复刻版，单人模式。包含完整的地图、政治、经济、工业、科技、生产、外交与军事系统。</p>
+                <p>《随便地图》，单人模式。包含完整的地图、政治、经济、工业、科技、生产、外交与军事系统。</p>
                 <p>时间跨度：1936 年 — 1948 年。</p>
             </div>
         </div>
@@ -49,6 +124,8 @@
                 </div>
             </div>
             <div class="top-right">
+                <button class="theme-toggle" data-theme-toggle
+                        type="button" aria-label="切换主题" title="切换到浅色主题">☀</button>
                 <button id="btnMenu" class="top-btn">菜单</button>
             </div>
         </header>

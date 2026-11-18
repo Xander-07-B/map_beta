@@ -9,11 +9,46 @@ const App = {
     uiAccumulator: 0,
     pendingCampaign: null,   // 新游戏已加载的剧本（等待选择国家）
     gameRunning: false,
+    theme: 'dark',
 
     init() {
+        this.initTheme();
         this.bindStartScreen();
         if (Game.hasSave()) {
             document.getElementById('btnContinue').disabled = false;
+        }
+    },
+
+    // ===================== 主题 =====================
+    initTheme() {
+        let theme = 'dark';
+        try {
+            if (localStorage.getItem('hoi4_theme') === 'light') theme = 'light';
+        } catch (e) { /* 隐私模式下忽略存储错误 */ }
+        this.applyTheme(theme);
+        document.querySelectorAll('[data-theme-toggle]').forEach(btn => {
+            btn.addEventListener('click', () => {
+                this.applyTheme(this.theme === 'light' ? 'dark' : 'light');
+            });
+        });
+    },
+
+    applyTheme(theme) {
+        this.theme = theme === 'light' ? 'light' : 'dark';
+        const isLight = this.theme === 'light';
+        document.documentElement.dataset.theme = this.theme;
+        try { localStorage.setItem('hoi4_theme', this.theme); } catch (e) { /* 忽略 */ }
+
+        // 按钮显示「点击后会切换到的主题」：深色时显示太阳，浅色时显示月亮
+        document.querySelectorAll('[data-theme-toggle]').forEach(btn => {
+            btn.textContent = isLight ? '☾' : '☀';
+            const label = isLight ? '切换到深色主题' : '切换到浅色主题';
+            btn.title = label;
+            btn.setAttribute('aria-label', label);
+        });
+
+        if (typeof MapView !== 'undefined' && MapView.setTheme) {
+            MapView.setTheme(this.theme);
         }
     },
 
