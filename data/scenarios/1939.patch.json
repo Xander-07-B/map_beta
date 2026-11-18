@@ -1,0 +1,28 @@
+{
+  "base": "1936",
+  "id": "1939",
+  "startDate": "1939-09-01",
+  "patch": {
+    "owners": {
+      "1159314695": "GER", "1159314679": "GER", "1159314685": "GER",
+      "1159314691": "GER", "1159314677": "GER", "1159314699": "GER"
+    },
+    "states": [
+      { "id": 101, "name": "l10n.state.germany", "owner": "GER", "core": "GER", "provinces": [1159312769, 1159312767, 1159310975, 1159310973, 1159312763, 1159312773, 1159310983, 1159315451], "capitalProvince": 1159312769, "population": 42000000, "factories": 24, "isCapital": true },
+      { "id": 102, "name": "l10n.state.poland",   "owner": "GER", "core": "POL", "provinces": [1159314695, 1159314679, 1159314685, 1159314691, 1159314677, 1159314699], "capitalProvince": 1159314695, "population": 35000000, "factories": 14, "isCapital": false },
+      { "id": 103, "name": "l10n.state.france",   "owner": "FRA", "core": "FRA", "provinces": [1159316799, 1159316737, 1159316741, 1159313547, 1159313573, 1159316785], "capitalProvince": 1159316799, "population": 50000000, "factories": 22, "isCapital": false }
+    ],
+    "wars": [
+      { "a": "GER", "b": "POL", "justification": "l10n.justification.invade_poland" }
+    ],
+    "missions": [
+      {
+        "id": "annex_poland",
+        "scope": "GER",
+        "objective": { "type": "controlState", "state": 102 },
+        "reward": { "politicalPower": 50, "stability": 0.05 },
+        "fail": { "type": "dateAfter", "value": "1940-12-31" }
+      }
+    ]
+  }
+}

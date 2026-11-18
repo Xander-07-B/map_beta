@@ -1,0 +1,37 @@
+{
+  "id": "ger_focus_1936",
+  "nodes": {
+    "reconstruction": {
+      "x": 2, "y": 0,
+      "cost": 20, "days": 70,
+      "name": "l10n.focus.reconstruction",
+      "desc": "l10n.focus.reconstruction.desc",
+      "effects": [
+        { "civs": 2 },
+        { "stability": 0.05 }
+      ]
+    },
+    "rearmament": {
+      "x": 3, "y": 1,
+      "cost": 20, "days": 70,
+      "prerequisites": ["reconstruction"],
+      "requires": { "civs": 5 },
+      "name": "l10n.focus.rearmament",
+      "desc": "l10n.focus.rearmament.desc",
+      "effects": [
+        { "mils": 4 },
+        { "researchBonus": { "techId": "inf_weapons_1", "amount": 100 } }
+      ]
+    },
+    "demand_danzig": {
+      "x": 5, "y": 2,
+      "cost": 30, "days": 100,
+      "prerequisites": ["rearmament"],
+      "name": "l10n.focus.demand_danzig",
+      "desc": "l10n.focus.demand_danzig.desc",
+      "effects": [
+        { "relation": ["GER", "POL", -30] }
+      ]
+    }
+  }
+}

@@ -1,0 +1,206 @@
+/* ============================================================
+ * 战役核心 · 模拟层门面（campaign.js）
+ * 串联 Clock + WorldState + Command 管道 + Rules + 剧本加载。
+ * 不碰 DOM、不产生渲染副作用——后续可整体搬进 Web Worker。
+ * ============================================================ */
+
+import { Clock, formatDate, parseDate, TICKS_PER_DAY } from './core/clock.js';
+import { Rng } from './core/rng.js';
+import { createWorldState } from './core/state.js';
+import { applyCommand } from './core/commands.js';
+import { drainPending, enqueue, installCoreRules, applyEffects } from './core/rules.js';
+import { cloneState, orderedKeys } from './core/determinism.js';
+import { evalTrigger } from './content/conditions.js';
+import { loadScenario } from './content/loader.js';
+
+export class Campaign {
+    /**
+     * @param {object} loaded loadScenario 的返回值
+     * @param {object} [opts] { seed }
+     */
+    constructor(loaded, opts = {}) {
+        this.scenario = loaded.scenario;
+        this.derivedFrom = loaded.derivedFrom;
+        this.content = {
+            focusTrees: loaded.focusTrees,
+            events: loaded.events,
+            decisions: loaded.decisions,
+        };
+        this.seed = opts.seed ?? 0x1936;
+        this.rng = new Rng(this.seed);
+        this.clock = new Clock({ startDate: this.scenario.startDate });
+        this.clock.onStep = (tick) => this.onTick(tick);
+        this.state = null;
+        this._listeners = {};
+    }
+
+    /** 异步创建：加载并校验剧本 */
+    static async create(scenarioId, opts = {}) {
+        const loaded = await loadScenario(scenarioId, opts);
+        return new Campaign(loaded, opts);
+    }
+
+    /** 由剧本构建初始状态 */
+    newGame() {
+        installCoreRules();
+        this.rng = new Rng(this.seed);
+        this.state = createWorldState({ scenario: this.scenario, seed: this.seed, rng: this.rng });
+        this.clock.tick = 0;
+        this.clock.acc = 0;
+        return this.state;
+    }
+
+    /** 命令上下文：模拟层内部使用，UI 不直接构造 */
+    ctx() {
+        return {
+            rng: this.rng,
+            focusTrees: this.content.focusTrees,
+            events: this.content.events,
+            decisions: this.content.decisions,
+            scenario: this.scenario,
+            applyEffects,
+            strict: true,
+            onChange: (cmd) => this.emit('command', { cmd, state: this.state }),
+        };
+    }
+
+    // ===================== 时间推进 =====================
+
+    /** 每个 tick 的结算入口（单一函数，内部按频率分派） */
+    onTick(tick) {
+        const s = this.state;
+        s.tick = tick;
+
+        // 每 tick：国策进度推进
+        this.advanceFocuses();
+
+        // 每 288 tick（日）：政治/人力等日结算（W2 落地，此处为占位钩子）
+        if (this.clock.isDayStart) this.dailySettlement();
+
+        // 月界：任务/胜负月度评估
+        if (this.clock.isMonthStart) {
+            enqueue(s, 'missionEval', {});
+        }
+
+        // 排空规则级联队列
+        drainPending(s, this.ctx());
+
+        if (s.victory) {
+            this.clock.setSpeed(0);
+            this.emit('victory', { state: s, victory: s.victory });
+        }
+        this.emit('tick', { tick, state: s });
+    }
+
+    /** 国策进度：每 tick 推进，完成时入队 focusCompleted 规则 */
+    advanceFocuses() {
+        const s = this.state;
+        for (const tag of orderedKeys(s.countries)) {
+            const c = s.countries[tag];
+            if (!c.activeFocus) continue;
+            c.activeFocus.progress += 1;
+            if (c.activeFocus.progress >= c.activeFocus.totalTicks) {
+                enqueue(s, 'focusCompleted', { tag, focusId: c.activeFocus.id });
+            }
+        }
+    }
+
+    /**
+     * 日结算：事件触发判定（每日对启用的事件做条件求值）。
+     * 政治/经济日结算（W2）在此接入。
+     */
+    dailySettlement() {
+        const s = this.state;
+        for (const eventId of s.events.enabled) {
+            if (s.events.triggered.includes(eventId)) continue;
+            const ev = this.content.events[eventId];
+            if (!ev) continue;
+            if (evalTrigger(ev.trigger, s, this.ctx(), ev.scope)) {
+                s.events.triggered.push(eventId);
+                this.emit('event', { eventId, event: ev });
+            }
+        }
+    }
+
+    /** 快进 n 个 tick（演示/测试用，等价于连续 onTick） */
+    fastForward(n) {
+        for (let i = 0; i < n; i++) this.onTick(this.clock.tick + 1);
+    }
+
+    // ===================== 命令入口 =====================
+
+    /** 提交命令：校验 → 执行 → 记日志 → 排空级联 */
+    command(cmd) {
+        const s = this.state;
+        const r = applyCommand(cmd, s, this.ctx());
+        if (r.ok) drainPending(s, this.ctx());
+        this.emit('change', { state: s });
+        return r;
+    }
+
+    // ===================== 存档 / 回放 =====================
+
+    /** 存档：全量快照 + 命令日志（后续可换二进制序列化） */
+    save() {
+        const s = this.state;
+        s.rngState = this.rng.getState();   // RNG 状态必须进存档
+        s.tick = this.clock.tick;
+        return {
+            meta: {
+                version: 3,
+                scenarioId: this.scenario.id,
+                mapVersion: this.scenario.map,
+                seed: this.seed,
+                tick: this.clock.tick,
+                derivedFrom: this.derivedFrom,
+                date: formatDate(this.clock.date),
+            },
+            snapshot: cloneState(s),
+            commands: s.log.slice(),
+        };
+    }
+
+    /** 从存档恢复（快照即全量状态，命令日志保留用于回放） */
+    restore(saveData) {
+        this.rng = new Rng(saveData.meta.seed ?? this.seed);
+        this.rng.loadState(saveData.snapshot.rngState);
+        this.state = cloneState(saveData.snapshot);
+        this.clock.restore({ tick: saveData.snapshot.tick, startDate: this.scenario.startDate, speed: 0 });
+        installCoreRules();
+        return this.state;
+    }
+
+    /**
+     * 回放：快照 + 命令日志顺序重放，复现同一结果。
+     * 每条日志携带当时 tick，重放时先恢复 tick 再应用命令并排空级联，
+     * 保证与原始执行路径逐位一致。用于调试与战后复盘。
+     */
+    replay(snapshot, commands) {
+        this.restore({ meta: { seed: this.seed }, snapshot });
+        const ctx = this.ctx();
+        for (const entry of commands) {
+            this.state.tick = entry.tick ?? this.state.tick;
+            const r = applyCommand(entry.cmd ?? entry, this.state, ctx);
+            if (!r.ok) return r;
+            drainPending(this.state, ctx);
+        }
+        return { ok: true };
+    }
+
+    // ===================== 事件订阅 =====================
+
+    on(event, cb) {
+        (this._listeners[event] = this._listeners[event] || []).push(cb);
+        return this;
+    }
+
+    emit(event, payload) {
+        for (const cb of this._listeners[event] || []) cb(payload);
+    }
+}
+
+export { formatDate, parseDate, TICKS_PER_DAY };
+
+if (typeof window !== 'undefined') {
+    window.Campaign = Campaign;
+}

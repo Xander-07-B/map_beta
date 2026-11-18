@@ -18,6 +18,11 @@ const IDEOLOGY = {
     fascism:     { name: '法西斯', color: '#b8504a', icon: '▲' },
     communism:   { name: '共产主义', color: '#a8743f', icon: '★' },
     neutrality:  { name: '中立',   color: '#6b7484', icon: '○' },
+    // 战役核心（指南）的意识形态取值，与上表同义
+    democratic:  { name: '民主',   color: '#5d7fa8', icon: '⚖' },
+    fascist:     { name: '法西斯', color: '#b8504a', icon: '▲' },
+    communist:   { name: '共产主义', color: '#a8743f', icon: '★' },
+    neutral:     { name: '中立',   color: '#6b7484', icon: '○' },
 };
 
 /* ---------- 资源定义 ---------- */
@@ -251,6 +256,7 @@ const COUNTRIES = [
 const TECHS = [
     // ===== 陆军 =====
     { id: 'infantry_weapons', name: '步兵武器', cat: 'army', icon: '✕', time: 120, requires: [], effect: '提升步兵师攻击力 10%', target: { divisionType: 'infantry', attack: 0.1 } },
+    { id: 'inf_weapons_1', name: '步兵武器研究', cat: 'army', icon: '✕', time: 120, requires: [], effect: '步兵装备科研（战役核心）', target: {} },
     { id: 'artillery', name: '火炮技术', cat: 'army', icon: '◎', time: 180, requires: [], effect: '提升所有师攻击力 10%', target: { attack: 0.1 } },
     { id: 'infantry_tactics', name: '步兵战术', cat: 'army', icon: '⬢', time: 150, requires: ['infantry_weapons'], effect: '提升步兵师防御 15%', target: { divisionType: 'infantry', defense: 0.15 } },
     { id: 'support_weapon', name: '支援武器', cat: 'army', icon: '⌖', time: 200, requires: ['artillery'], effect: '提升所有师攻击力 8%', target: { attack: 0.08 } },

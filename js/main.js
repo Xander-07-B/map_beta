@@ -1,59 +1,77 @@
 /* ============================================================
  * 钢铁雄心4 网页版 - 主入口与游戏循环 main.js
  * 负责：启动菜单、国家选择、游戏循环、初始化串联
+ * 模拟由战役核心（Campaign）驱动，本文件只做渲染层调度。
  * ============================================================ */
 
 const App = {
     lastTime: 0,
-    tickInterval: 1000, // 每1000ms执行一次日 tick
-    lastTickTime: 0,
+    uiAccumulator: 0,
+    pendingCampaign: null,   // 新游戏已加载的剧本（等待选择国家）
+    gameRunning: false,
 
     init() {
         this.bindStartScreen();
-        // 检查存档
         if (Game.hasSave()) {
             document.getElementById('btnContinue').disabled = false;
         }
-        // 渲染国家选择
-        this.renderCountryList();
     },
 
     // ===================== 启动菜单 =====================
     bindStartScreen() {
-        document.getElementById('btnNewGame').addEventListener('click', () => {
-            document.getElementById('countrySelect').classList.remove('hidden');
-            this.renderCountryList();
+        document.getElementById('btnNewGame').addEventListener('click', async () => {
+            const countrySelect = document.getElementById('countrySelect');
+            countrySelect.classList.remove('hidden');
+            const list = document.getElementById('countryList');
+            list.innerHTML = '<div style="color:var(--text-dim);padding:10px">正在加载剧本…</div>';
+            try {
+                // 加载并校验剧本（模拟层就绪）
+                this.pendingCampaign = await Game.prepareNewGame();
+                this.renderCountryList(this.pendingCampaign);
+            } catch (err) {
+                list.innerHTML = `<div style="color:var(--red);padding:10px">剧本加载失败：${err.message}</div>`;
+                console.error(err);
+            }
         });
-        document.getElementById('btnContinue').addEventListener('click', () => {
-            // 存档省份体系已更新，继续游戏以存档中的国家重新开局
-            const saved = Game.load();
-            this.pendingCountry = saved ? (Game.playerCountryId || 'germany') : 'germany';
-            this.enterGame();
+        document.getElementById('btnContinue').addEventListener('click', async () => {
+            // 继续游戏：先加载剧本（存档恢复需要 Campaign 实例），再从存档覆盖状态
+            try {
+                await Game.prepareNewGame();
+                if (!Game.load()) {
+                    alert('存档读取失败，请开始新游戏。');
+                    return;
+                }
+                this.enterGame();
+            } catch (err) {
+                alert('存档读取失败：' + err.message);
+                console.error(err);
+            }
         });
         document.getElementById('btnCredits').addEventListener('click', () => {
             document.getElementById('aboutBox').classList.remove('hidden');
         });
     },
 
-    renderCountryList() {
+    renderCountryList(campaign) {
         const list = document.getElementById('countryList');
         list.innerHTML = '';
-        for (const c of COUNTRIES) {
+        for (const [tag, def] of Object.entries(campaign.scenario.countries)) {
             const card = document.createElement('div');
             card.className = 'country-card';
-            const ideo = IDEOLOGY[c.ideology];
+            const ideo = IDEOLOGY[def.ideology] || { icon: '○', name: '中立' };
             card.innerHTML = `
-                <div class="cc-flag">${c.flag}</div>
-                <div class="cc-name">${c.name}</div>
+                <div class="cc-flag" style="background:${def.color}">${def.flag}</div>
+                <div class="cc-name">${window.Core.t(def.name)}</div>
                 <div class="cc-ideo">${ideo.icon} ${ideo.name}</div>
             `;
-            card.addEventListener('click', () => this.startGame(c.id));
+            card.addEventListener('click', () => this.startGame(tag));
             list.appendChild(card);
         }
     },
 
-    startGame(countryId) {
-        this.pendingCountry = countryId;
+    startGame(tag) {
+        // 以选定国家开局（构建初始状态、挂接事件）
+        Game.startWith(tag);
         this.enterGame();
     },
 
@@ -61,7 +79,6 @@ const App = {
         document.getElementById('startScreen').classList.remove('active');
         document.getElementById('gameScreen').classList.add('active');
 
-        // 显示加载遮罩
         const loader = document.getElementById('loadingOverlay');
         loader.classList.remove('hidden');
         document.getElementById('loadingText').textContent = '正在加载世界地图…';
@@ -75,23 +92,22 @@ const App = {
 
         MapView.init(mapCanvas, miniCanvas, Game);
 
-        // 异步加载矢量地图数据，加载完成后初始化游戏
         MapView.loadData().then(() => {
-            // 数据就绪，构建省份与游戏状态
-            Game.newGame(this.pendingCountry);
-            // 首次绘制（此时省份归属已就绪）
+            // 数据就绪：归属已就绪，首次绘制
             MapView.fitWorld();
             MapView.draw();
             loader.classList.add('hidden');
+
+            // 启动战役时钟（模拟层自驱 rAF 循环）
+            Game.clock.start();
+            Game.speed = 1;
 
             // 初始化 UI
             UI.init(Game);
             UI.refreshAll();
 
-            // 开始游戏循环
-            this.lastTickTime = performance.now();
+            // 主循环：只负责定期刷新 UI（模拟由 Campaign 时钟驱动）
             this.lastTime = performance.now();
-            this.tickAccumulator = 0;
             this.uiAccumulator = 0;
             this.gameRunning = true;
             this.gameLoop(performance.now());
@@ -101,28 +117,13 @@ const App = {
         });
     },
 
-    // ===================== 游戏循环 =====================
+    // ===================== 游戏循环（渲染层） =====================
     gameLoop(currentTime) {
         const delta = currentTime - this.lastTime;
         this.lastTime = currentTime;
 
-        // 事件弹窗出现时暂停时间推进
-        if (Game.activeEvent) {
-        } else if (Game.speed > 0) {
-            this.tickAccumulator += delta;
-            const tickInterval = 1000 / (Game.speed + 1);
-            let ticksThisFrame = 0;
-            while (this.tickAccumulator >= tickInterval && Game.speed > 0 && ticksThisFrame < 50) {
-                this.tickAccumulator -= tickInterval;
-                this.doTick();
-                ticksThisFrame++;
-            }
-            // 防止堆积过多
-            if (this.tickAccumulator > 5000) this.tickAccumulator = 0;
-        }
-
         // 定期刷新 UI（每 400ms）
-        this.uiAccumulator = (this.uiAccumulator || 0) + delta;
+        this.uiAccumulator += delta;
         if (this.uiAccumulator > 400) {
             this.uiAccumulator = 0;
             UI.refreshAll();
@@ -131,33 +132,15 @@ const App = {
         this.requestFrame = requestAnimationFrame((t) => this.gameLoop(t));
     },
 
-    doTick() {
-        Game.tickAccumulator++;
-        Game.advanceDate(GAME.TICK_DAYS);
-        Game.dailyTick();
-
-        // 检查是否达到结束日期
-        const end = GAME.END_DATE;
-        if (Game.date.year > end.year) {
-            this.endGame('时间已到达 1948 年，游戏结束！');
-        }
-    },
-
-    endGame(message) {
-        Game.running = false;
-        Game.speed = 0;
+    // 返回主菜单：停时钟、停主循环
+    returnToMenu() {
+        if (Game.clock) Game.clock.stop();
         this.gameRunning = false;
         if (this.requestFrame) cancelAnimationFrame(this.requestFrame);
-        UI.showModal('游戏结束', `<p>${message}</p>
-            <p style="margin-top:10px;color:var(--text-dim)">最终日期：${Game.formatDate()}</p>
-            <p>您统治的疆域：${Game.provincesOf(Game.playerCountryId).length} 个省份</p>`,
-            [
-                { text: '返回主菜单', cls: 'primary', action: () => {
-                    UI.closeModal();
-                    document.getElementById('gameScreen').classList.remove('active');
-                    document.getElementById('startScreen').classList.add('active');
-                }},
-            ]);
+        document.getElementById('gameScreen').classList.remove('active');
+        document.getElementById('startScreen').classList.add('active');
+        document.getElementById('countrySelect').classList.add('hidden');
+        if (Game.hasSave()) document.getElementById('btnContinue').disabled = false;
     },
 
     // 全局 resize 处理
@@ -174,7 +157,6 @@ const App = {
 window.addEventListener('DOMContentLoaded', () => {
     App.init();
     App.setupResize();
-    // 默认进入游戏循环（用标志控制）
     App.gameRunning = false;
 });
 

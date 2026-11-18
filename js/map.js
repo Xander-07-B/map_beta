@@ -52,7 +52,7 @@ const MapView = {
     scale: 1, offsetX: 0, offsetY: 0,
     targetScale: 1, targetOffsetX: 0, targetOffsetY: 0,
     viewW: 0, viewH: 0,
-    fitScale: 0.3, minScale: 0.25, maxScale: 7.0,
+    fitScale: 0.3, minScale: 0.25, maxScale: 24.0,
 
     // === 交互状态 ===
     hoverProvince: null, selectedProvince: null,
@@ -569,7 +569,7 @@ const MapView = {
         const w = x1 - x0, h = y1 - y0;
         const sx = this.viewW / w, sy = this.viewH / h;
         this.fitScale = Math.min(sx, sy) * 0.96;
-        // 最小缩放略小于全图适配，最大放大 7 倍，避免无意义的超远缩放
+        // 最小缩放略小于全图适配，最大放大 24 倍，避免无意义的超远缩放
         this.minScale = this.fitScale * 0.9;
         this.scale = this.fitScale;
         this.offsetX = (this.viewW - w * this.scale) / 2 - x0 * this.scale;
@@ -751,15 +751,16 @@ const MapView = {
 
     drawArmies(ctx) {
         const game = this.game;
-        for (const army of game.armies) {
-            const prov = game.provinceById(army.provinceId);
+        // 驻军存在性（仅呈现，无战斗结算）
+        for (const g of game.garrisons()) {
+            const prov = game.provinceById(g.provinceId);
             if (!prov) continue;
-            const b = this.bbox.get(army.provinceId);
+            const b = this.bbox.get(g.provinceId);
             if (!b) continue;
             const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
-            const owner = game.countryById(army.owner);
+            const owner = game.countryById(g.owner);
             const color = owner ? owner.color : '#fff';
-            const size = Math.max(5, Math.min(16, 5 + army.strength / 20)) / this.scale;
+            const size = Math.max(5, Math.min(16, 4 + g.count / 4)) / this.scale;
             ctx.fillStyle = color;
             ctx.strokeStyle = '#000';
             ctx.lineWidth = 1.2 / this.scale;
@@ -771,7 +772,7 @@ const MapView = {
                 ctx.fillStyle = '#fff';
                 ctx.font = `bold ${9 / this.scale}px sans-serif`;
                 ctx.textAlign = 'center';
-                ctx.fillText(Math.round(army.strength), cx, cy + 3 / this.scale);
+                ctx.fillText(Math.round(g.count), cx, cy + 3 / this.scale);
             }
         }
     },
@@ -798,11 +799,11 @@ const MapView = {
         // 前线高亮
         if (this.tool === 'front') {
             const view = this.viewRect();
+            const garrisons = this.game.garrisons();
             for (const [id] of this.paths) {
                 const b = this.bbox.get(id);
                 if (!b || !this.inView(b, view)) continue;
-                const armies = this.game.armies.filter(a => a.provinceId === id);
-                const owners = new Set(armies.map(a => a.owner));
+                const owners = new Set(garrisons.filter(g => g.provinceId === id).map(g => g.owner));
                 if (owners.size > 1) {
                     const path = this.paths.get(id);
                     ctx.fillStyle = 'rgba(200,74,74,0.25)';
@@ -1070,7 +1071,7 @@ const MapView = {
             document.body.appendChild(tip);
         }
         const owner = this.game.ownerOf(prov.id);
-        const ownerName = owner ? this.game.countryById(owner).name : '无主';
+        const ownerName = owner ? this.game.countryDisplayName(owner) : '无主';
         tip.innerHTML = `<b>${prov.name}</b><br/>归属：${ownerName}`;
         tip.style.display = 'block';
         tip.style.left = (pos.x + 14) + 'px';

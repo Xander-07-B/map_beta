@@ -1,0 +1,16 @@
+{
+  "id": "war_bonds",
+  "scope": "any",
+  "trigger": {
+    "all": [
+      { "civs": [">=", 8] }
+    ]
+  },
+  "cost": { "politicalPower": 20 },
+  "cooldown": 180,
+  "repeatable": true,
+  "effects": [
+    { "manpower": 200000 },
+    { "stability": -0.03 }
+  ]
+}
