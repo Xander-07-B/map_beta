@@ -8,7 +8,7 @@
 import { applyCommand } from './commands.js';
 import { recomputeVictoryPoints, clearAtWar } from './state.js';
 import { FP_SCALE, fpAddClamp01, orderedKeys } from './determinism.js';
-import { formatDate, parseDate } from './clock.js';
+import { formatDate, parseDate, TICK_GAME_DAYS } from './clock.js';
 
 export const RULES = {};
 
@@ -135,7 +135,7 @@ export function checkVictoryCondition(s, cond, tag) {
 }
 
 function ticksOf(s, dateStr) {
-    return Math.round((parseDate(dateStr).getTime() - parseDate(s.startDate).getTime()) / (5 * 60000));
+    return Math.round((parseDate(dateStr).getTime() - parseDate(s.startDate).getTime()) / (TICK_GAME_DAYS * 86400000));
 }
 
 /** 任务目标求值：返回 'complete' | 'fail' | null */
@@ -161,7 +161,7 @@ function evalMissionObjective(s, objective, tag) {
 }
 
 function pushHistory(s, text) {
-    s.history.push({ tick: s.tick, date: formatDate(new Date(parseDate(s.startDate).getTime() + s.tick * 5 * 60000)), text });
+    s.history.push({ tick: s.tick, date: formatDate(new Date(parseDate(s.startDate).getTime() + s.tick * TICK_GAME_DAYS * 86400000)), text });
 }
 
 /** 内置规则集合 */

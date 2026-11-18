@@ -4,9 +4,9 @@
  * 求值必须纯且快：只读状态，不产生副作用、不消耗 RNG。
  * ============================================================ */
 
-import { parseDate, TICK_MINUTES } from '../core/clock.js';
+import { parseDate, TICK_GAME_DAYS } from '../core/clock.js';
 
-const TICK_MS = TICK_MINUTES * 60000;
+const TICK_MS = TICK_GAME_DAYS * 86400000;
 
 /** 日期字符串 → 自开局起的 tick 数 */
 export function dateToTicks(s, dateStr) {

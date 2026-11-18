@@ -4,7 +4,7 @@
  * 不碰 DOM、不产生渲染副作用——后续可整体搬进 Web Worker。
  * ============================================================ */
 
-import { Clock, formatDate, parseDate, TICKS_PER_DAY } from './core/clock.js';
+import { Clock, formatDate, parseDate } from './core/clock.js';
 import { Rng } from './core/rng.js';
 import { createWorldState } from './core/state.js';
 import { applyCommand } from './core/commands.js';
@@ -74,10 +74,10 @@ export class Campaign {
         // 每 tick：国策进度推进
         this.advanceFocuses();
 
-        // 每 288 tick（日）：政治/人力等日结算（W2 落地，此处为占位钩子）
-        if (this.clock.isDayStart) this.dailySettlement();
+        // 每 tick = 2 游戏日：政治/人力等日结算随每 tick 执行（W2 落地，此处为占位钩子）
+        this.dailySettlement();
 
-        // 月界：任务/胜负月度评估
+        // 月界（每 15 tick = 30 游戏日）：任务/胜负月度评估
         if (this.clock.isMonthStart) {
             enqueue(s, 'missionEval', {});
         }
@@ -199,7 +199,7 @@ export class Campaign {
     }
 }
 
-export { formatDate, parseDate, TICKS_PER_DAY };
+export { formatDate, parseDate };
 
 if (typeof window !== 'undefined') {
     window.Campaign = Campaign;

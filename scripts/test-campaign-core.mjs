@@ -1,7 +1,7 @@
 /* ============================================================
  * 战役核心 · 确定性测试（scripts/test-campaign-core.mjs）
  * 运行：npm test（在项目根目录）
- * 覆盖：PRNG 确定性、时钟换算（1 tick = 5 分钟）、剧本加载校验、
+ * 覆盖：PRNG 确定性、时钟换算（1 tick = 30 真实秒 = 2 游戏日）、剧本加载校验、
  *       命令管道、国策/决议执行、宣战→吞并→胜负闭环、
  *       双跑一致（确定性）、快照+日志回放复现。
  * ============================================================ */
@@ -11,7 +11,8 @@ import path from 'node:path';
 import {
     Rng,
     Clock,
-    TICKS_PER_DAY,
+    TICK_GAME_DAYS,
+    TICKS_PER_MONTH,
     Campaign,
     loadScenario,
     validateScenario,
@@ -58,30 +59,27 @@ section('1. PRNG 确定性（xoshiro256**）');
 }
 
 // ============================================================
-section('2. 逻辑时钟（1 tick = 5 游戏分钟）');
+section('2. 逻辑时钟（1 tick = 30 真实秒 = 2 游戏日）');
 {
     const cl = new Clock({ startDate: '1936-01-01' });
     assertEqual(cl.date.toISOString(), '1936-01-01T00:00:00.000Z', 'tick 0 为开局日期');
     cl.tick = 1;
-    assertEqual(cl.date.toISOString(), '1936-01-01T00:05:00.000Z', '1 tick = 5 分钟');
-    cl.tick = TICKS_PER_DAY;
-    assertEqual(cl.date.toISOString(), '1936-01-02T00:00:00.000Z', '288 tick = 1 游戏日');
-    assertEqual(cl.isDayStart, true, '日界判定');
-    cl.tick = 31 * TICKS_PER_DAY;
-    assertEqual(cl.isMonthStart, true, '月界判定（1936-02-01）');
+    assertEqual(cl.date.toISOString(), '1936-01-03T00:00:00.000Z', '1 tick = 2 游戏日');
+    assertEqual(cl.gameDay, 2, 'gameDay = tick × 2');
+    cl.tick = TICKS_PER_MONTH;   // 15
+    assertEqual(cl.date.toISOString(), '1936-01-31T00:00:00.000Z', '15 tick = 30 游戏日');
+    assertEqual(cl.isMonthStart, true, '月界判定（30 游戏日）');
 
-    // advance 用注入的 now 驱动
-    let now = 0;
-    const cl2 = new Clock({ startDate: '1936-01-01', now: () => now });
+    // advance 用真实毫秒驱动（TICK_REAL_MS = 30000，1x 下 30 真实秒 = 1 tick）
+    const cl2 = new Clock({ startDate: '1936-01-01' });
     cl2.setSpeed(1);
-    cl2.advance(250);   // 250ms / 100ms 每 tick = 2 tick
-    assertEqual(cl2.tick, 2, 'advance 按 STEP 折算 tick');
-    now = 1000;
-    cl2.advance(1000);  // 再 10 tick
-    assertEqual(cl2.tick, 12, 'acc 累加跨帧折算');
+    cl2.advance(30000);   // 30 真实秒 = 1 tick
+    assertEqual(cl2.tick, 1, 'advance 按 STEP（30s）折算 tick');
+    cl2.advance(60000);   // 再 2 tick
+    assertEqual(cl2.tick, 3, 'acc 累加跨帧折算');
     cl2.setSpeed(0);
-    cl2.advance(5000);
-    assertEqual(cl2.tick, 12, '速度 0 时不推进');
+    cl2.advance(600000);
+    assertEqual(cl2.tick, 3, '速度 0 时不推进');
 }
 
 // ============================================================
@@ -155,7 +153,7 @@ section('5. 国策链：选择 → 推进 → 完成 → 效果');
     assertEqual(s.countries.GER.politicalPower, 60, '国策成本扣除（80-20）');
     assertEqual(s.countries.GER.activeFocus.id, 'reconstruction', '国策进入进行态');
 
-    camp.fastForward(70 * TICKS_PER_DAY);   // 70 天 = 20160 tick
+    camp.fastForward(Math.round(70 / TICK_GAME_DAYS));   // 70 天 = 35 tick
     assertEqual(s.countries.GER.activeFocus, null, '国策完成后清空进行态');
     assert(s.focuses.GER.done.includes('reconstruction'), '国策标记完成');
     assertEqual(s.countries.GER.civs, 22, '国策效果：civs +2');
@@ -163,7 +161,7 @@ section('5. 国策链：选择 → 推进 → 完成 → 效果');
 
     // 第二级国策（requires civs >= 5）
     assert(camp.command({ t: 'chooseFocus', country: 'GER', focusId: 'rearmament' }).ok, '前置满足后可选 rearmament');
-    camp.fastForward(70 * TICKS_PER_DAY);
+    camp.fastForward(Math.round(70 / TICK_GAME_DAYS));
     assertEqual(s.countries.GER.mils, 16, '国策效果：mils +4');
     assertEqual(s.countries.GER.researchProgress['inf_weapons_1'], 100, '国策效果：科研加成');
 }

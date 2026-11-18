@@ -6,7 +6,7 @@
  *   applyCommand    —— validate → execute → 记日志 → 通知渲染层
  * ============================================================ */
 
-import { TICKS_PER_DAY } from './clock.js';
+import { TICK_GAME_DAYS } from './clock.js';
 import { FP_SCALE, fpAddClamp01, orderedKeys } from './determinism.js';
 import { evalTrigger } from '../content/conditions.js';
 
@@ -133,7 +133,7 @@ export function validateCommand(cmd, s, ctx) {
             if ((s.countries[cmd.country].politicalPower ?? 0) < cost) return err('政治点数不足以执行决议');
             const ds = s.decisions[cmd.country];
             const lastTick = ds.lastExecuted[cmd.decisionId];
-            const cooldownTicks = (dec.cooldown ?? 0) * TICKS_PER_DAY;
+            const cooldownTicks = Math.round((dec.cooldown ?? 0) / TICK_GAME_DAYS);
             if (lastTick !== undefined && s.tick - lastTick < cooldownTicks) return err('决议冷却中');
             if (!dec.repeatable && (ds.count[cmd.decisionId] ?? 0) > 0) return err('决议不可重复执行');
             return null;
@@ -168,7 +168,7 @@ export function executeCommand(cmd, s, ctx) {
             c.activeFocus = {
                 id: cmd.focusId,
                 progress: 0,
-                totalTicks: (node.days ?? 0) * TICKS_PER_DAY,
+                totalTicks: Math.round((node.days ?? 0) / TICK_GAME_DAYS),
             };
             break;
         }

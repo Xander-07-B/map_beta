@@ -1,28 +1,34 @@
 /* ============================================================
  * 战役核心 · 逻辑时钟（clock.js）
- * 约定：1 tick = 5 游戏分钟。
- *   → 1 游戏日 = 24×60/5 = 288 tick
- *   → 日界：tick % 288 === 0；月界：日界且日历日期为 1 号
+ * 约定：1 tick = 30 真实秒（1x 速度）= 2 游戏日。
+ *   → 1 游戏日 = 0.5 tick；1 游戏月（30 天）= 15 tick
+ *   → 月界：gameDay % 30 === 0，即 tick % 15 === 0
+ *   → 日界：2 天一跳，无逐日概念；日结算随每 tick 执行（每 tick 覆盖 2 天）
  * 真实时间换算：1x 速度下每 tick 消耗 TICK_REAL_MS 毫秒，
  * 倍速按 speed 线性缩放。用 requestAnimationFrame 的 dt 累加，
  * 不用 setInterval——后台标签页被节流后时间会错乱。
  * ============================================================ */
 
-/** 每个 tick 代表的游戏分钟数 */
-export const TICK_MINUTES = 5;
+/** 每个 tick 推进的游戏日数 */
+export const TICK_GAME_DAYS = 2;
 
-/** 一个游戏日对应的 tick 数 */
-export const TICKS_PER_DAY = (24 * 60) / TICK_MINUTES; // 288
+/** 月结算周期（固定 30 天，确定性，不依赖日历月长度） */
+export const DAYS_PER_MONTH = 30;
 
-/** 1x 速度下，推进 1 个 tick 所需的真实毫秒（1 游戏日 ≈ 28.8 秒） */
-export const TICK_REAL_MS = 100;
+/** 一个月对应的 tick 数 */
+export const TICKS_PER_MONTH = DAYS_PER_MONTH / TICK_GAME_DAYS; // 15
+
+/** 1x 速度下，推进 1 个 tick 所需的真实毫秒（30 真实秒） */
+export const TICK_REAL_MS = 30000;
 
 /** 单帧最大步进上限，防死亡螺旋（切回前台时累积过多） */
 export const MAX_STEPS_PER_FRAME = 240;
 
-/** 在日期上前进 n 个 tick（确定性：基于 UTC 毫秒的精确加法） */
+const DAY_MS = 86400000;
+
+/** 在日期上前进 n 个 tick（每 tick = TICK_GAME_DAYS 天，确定性 UTC 加法） */
 export function addTicksToDate(date, n) {
-    return new Date(date.getTime() + n * TICK_MINUTES * 60000);
+    return new Date(date.getTime() + n * TICK_GAME_DAYS * DAY_MS);
 }
 
 /** 日期格式化：1936.01.01 */
@@ -60,19 +66,19 @@ export class Clock {
         this._last = 0;
     }
 
-    /** 当前游戏日期 */
+    /** 当前游戏日期（每 tick 前进 2 天） */
     get date() {
         return addTicksToDate(this.startDate, this.tick);
     }
 
-    /** 是否为日界（每 288 tick 一次） */
-    get isDayStart() {
-        return this.tick % TICKS_PER_DAY === 0;
+    /** 已过游戏日数 = tick × 2 */
+    get gameDay() {
+        return this.tick * TICK_GAME_DAYS;
     }
 
-    /** 是否为月界（日界且日历日期为 1 号） */
+    /** 是否为月界（每 15 tick 一次，即每 30 游戏日） */
     get isMonthStart() {
-        return this.isDayStart && this.date.getUTCDate() === 1;
+        return this.tick > 0 && this.gameDay % DAYS_PER_MONTH === 0;
     }
 
     /** 推进真实时间 dtMs 毫秒，按速度折算出若干 tick */
