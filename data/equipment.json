@@ -1,0 +1,18 @@
+{
+  "equipment": {
+    "infantry_weapon": { "name": "步兵武器", "icon": "✕", "cost": 1.0, "usesResources": { "steel": 0.3, "iron": 0.2 }, "category": "army" },
+    "artillery": { "name": "火炮", "icon": "◎", "cost": 3.0, "usesResources": { "steel": 0.6, "iron": 0.3 }, "category": "army" },
+    "light_tank": { "name": "轻坦", "icon": "◫", "cost": 6.0, "usesResources": { "steel": 0.8, "aluminium": 0.3, "energy": 0.2 }, "category": "army" },
+    "medium_tank": { "name": "中坦", "icon": "▣", "cost": 10.0, "usesResources": { "steel": 1.0, "aluminium": 0.5, "energy": 0.3 }, "category": "army" },
+    "heavy_tank": { "name": "重坦", "icon": "█", "cost": 14.0, "usesResources": { "steel": 1.2, "aluminium": 0.7, "energy": 0.4 }, "category": "army" },
+    "fighter": { "name": "战斗机", "icon": "✈", "cost": 8.0, "usesResources": { "aluminium": 0.6, "steel": 0.3, "energy": 0.2 }, "category": "air" },
+    "bomber": { "name": "轰炸机", "icon": "✈", "cost": 12.0, "usesResources": { "aluminium": 0.8, "steel": 0.4, "energy": 0.3 }, "category": "air" },
+    "tactical_bomber": { "name": "战术轰炸机", "icon": "✈", "cost": 10.0, "usesResources": { "aluminium": 0.7, "steel": 0.3, "energy": 0.3 }, "category": "air" },
+    "destroyer": { "name": "驱逐舰", "icon": "⚓", "cost": 10.0, "usesResources": { "steel": 1.0, "aluminium": 0.3 }, "category": "navy" },
+    "cruiser": { "name": "巡洋舰", "icon": "⚓", "cost": 16.0, "usesResources": { "steel": 1.2, "aluminium": 0.4 }, "category": "navy" },
+    "carrier": { "name": "航母", "icon": "⚓", "cost": 24.0, "usesResources": { "steel": 1.5, "aluminium": 0.6, "energy": 0.3 }, "category": "navy" },
+    "battleship": { "name": "战列舰", "icon": "⚓", "cost": 28.0, "usesResources": { "steel": 1.8, "aluminium": 0.4, "energy": 0.4 }, "category": "navy" },
+    "truck": { "name": "卡车", "icon": "⛃", "cost": 3.0, "usesResources": { "steel": 0.4, "energy": 0.2 }, "category": "army" },
+    "radar": { "name": "雷达", "icon": "⌖", "cost": 4.0, "usesResources": { "steel": 0.2, "aluminium": 0.3, "energy": 0.3 }, "category": "support" }
+  }
+}

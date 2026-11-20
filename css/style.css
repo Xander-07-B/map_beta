@@ -417,6 +417,9 @@ button {
 }
 
 .date-display {
+    display: flex;
+    align-items: center;
+    gap: 8px;
     font-size: 16px;
     font-weight: 700;
     color: var(--text);
@@ -424,21 +427,41 @@ button {
     font-variant-numeric: tabular-nums;
     padding-right: 4px;
 }
+.pause-hint {
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: .04em;
+    color: #fbbf24;
+    background: rgba(251, 191, 36, 0.12);
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    border-radius: var(--pill);
+    padding: 2px 8px;
+    white-space: nowrap;
+}
 
 .speed-controls {
     display: flex;
-    gap: 2px;
-    padding: 3px;
+    align-items: center;
+    gap: 6px;
+    padding: 5px 8px;
     background: rgba(255, 255, 255, 0.04);
     border: 1px solid var(--border-faint);
     border-radius: var(--pill);
 }
 .speed-btn {
-    width: 30px; height: 28px;
+    width: 36px; height: 32px;
     border-radius: var(--pill);
     color: var(--text-dim);
-    font-size: 11px;
-    display: flex; align-items: center; justify-content: center;
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 1px;
+    line-height: 1;
+    flex: 0 0 auto;
+}
+.speed-btn .sb-icon { font-size: 12px; }
+.speed-btn .sb-num {
+    font-size: 9px;
+    opacity: .7;
+    font-variant-numeric: tabular-nums;
 }
 .speed-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 .speed-btn.active {
@@ -446,6 +469,7 @@ button {
     color: #fff;
     box-shadow: 0 4px 14px rgba(37, 99, 235, 0.45);
 }
+.speed-btn.active .sb-num { opacity: .85; }
 
 .top-btn {
     padding: 7px 14px;
@@ -1019,8 +1043,10 @@ button {
     }
     .country-name { font-size: 12px; max-width: 120px; }
     .date-display { font-size: 13px; }
-    .speed-controls { padding: 2px; }
-    .speed-btn { width: 24px; height: 24px; font-size: 9px; }
+    .speed-controls { padding: 3px 5px; gap: 4px; }
+    .speed-btn { width: 30px; height: 28px; }
+    .speed-btn .sb-icon { font-size: 11px; }
+    .speed-btn .sb-num { font-size: 8px; }
     .top-btn { padding: 6px 11px; font-size: 12px; }
 
     /* 工具栏下移到顶栏之下 */
@@ -1093,7 +1119,10 @@ button {
     .country-name { display: none; }
     .top-left { padding-right: 8px; }
     .date-display { font-size: 12px; }
-    .speed-btn { width: 22px; height: 22px; font-size: 8px; }
+    .speed-controls { gap: 3px; padding: 3px 4px; }
+    .speed-btn { width: 26px; height: 26px; }
+    .speed-btn .sb-icon { font-size: 11px; }
+    .speed-btn .sb-num { display: none; }
 }
 
 @media (max-width: 420px) {

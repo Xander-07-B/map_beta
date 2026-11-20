@@ -114,16 +114,39 @@
                 <span id="countryName" class="country-name"></span>
             </div>
             <div class="top-center">
-                <div class="date-display"><span id="dateText">1936.01.01</span></div>
+                <div class="date-display">
+                    <span id="dateText">1936.01.01</span>
+                    <span id="pauseHint" class="pause-hint hidden">已暂停</span>
+                </div>
                 <div class="speed-controls">
-                    <button data-speed="0" class="speed-btn active" title="暂停">❚❚</button>
-                    <button data-speed="1" class="speed-btn" title="1级速度">▶</button>
-                    <button data-speed="2" class="speed-btn" title="2级速度">▶▶</button>
-                    <button data-speed="3" class="speed-btn" title="3级速度">▶▶▶</button>
-                    <button data-speed="4" class="speed-btn" title="4级速度">▶▶▶▶</button>
+                    <button data-speed="0" class="speed-btn active" title="暂停">
+                        <span class="sb-icon">❚❚</span><span class="sb-num">停</span>
+                    </button>
+                    <button data-speed="1" class="speed-btn" title="1 级速度">
+                        <span class="sb-icon">▶</span><span class="sb-num">1</span>
+                    </button>
+                    <button data-speed="2" class="speed-btn" title="2 级速度">
+                        <span class="sb-icon">▶</span><span class="sb-num">2</span>
+                    </button>
+                    <button data-speed="3" class="speed-btn" title="3 级速度">
+                        <span class="sb-icon">▶</span><span class="sb-num">3</span>
+                    </button>
+                    <button data-speed="4" class="speed-btn" title="4 级速度">
+                        <span class="sb-icon">▶</span><span class="sb-num">4</span>
+                    </button>
+                    <button data-speed="5" class="speed-btn" title="5 级速度">
+                        <span class="sb-icon">▶</span><span class="sb-num">5</span>
+                    </button>
+                    <button data-speed="6" class="speed-btn" title="6 级速度">
+                        <span class="sb-icon">▶</span><span class="sb-num">6</span>
+                    </button>
+                    <button data-speed="8" class="speed-btn" title="8 级速度（最快）">
+                        <span class="sb-icon">⏭</span><span class="sb-num">8</span>
+                    </button>
                 </div>
             </div>
             <div class="top-right">
+                <button id="btnAI" class="top-btn" title="切换 AI 接管：所有非玩家国家由 AI 决策">AI</button>
                 <button class="theme-toggle" data-theme-toggle
                         type="button" aria-label="切换主题" title="切换到浅色主题">☀</button>
                 <button id="btnMenu" class="top-btn">菜单</button>
@@ -153,6 +176,7 @@
             <button class="rail-btn" data-panel="politics"><span class="rb-icon">⚖</span><span class="rb-label">政治</span></button>
             <button class="rail-btn" data-panel="economy"><span class="rb-icon">◈</span><span class="rb-label">经济</span></button>
             <button class="rail-btn" data-panel="production"><span class="rb-icon">⚙</span><span class="rb-label">生产</span></button>
+            <button class="rail-btn" data-panel="army"><span class="rb-icon">⚔</span><span class="rb-label">部队</span></button>
             <button class="rail-btn" data-panel="tech"><span class="rb-icon">⚛</span><span class="rb-label">科技</span></button>
             <button class="rail-btn" data-panel="diplomacy"><span class="rb-icon">☥</span><span class="rb-label">外交</span></button>
             <button class="rail-btn" data-panel="intelligence"><span class="rb-icon">⊙</span><span class="rb-label">情报</span></button>
@@ -212,7 +236,6 @@
     <script src="js/data.js"></script>
     <script src="js/map.js"></script>
     <script src="js/game.js"></script>
-    <script src="js/ai.js"></script>
     <script src="js/ui.js"></script>
     <script src="js/main.js"></script>
     <!-- 战役核心（ES 模块，挂载 window.Core，供后续集成取用） -->

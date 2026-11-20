@@ -12,6 +12,9 @@ import { drainPending, enqueue, installCoreRules, applyEffects } from './core/ru
 import { cloneState, orderedKeys } from './core/determinism.js';
 import { evalTrigger } from './content/conditions.js';
 import { loadScenario } from './content/loader.js';
+import { settleEconomy } from './core/economy.js';
+import { settleWar } from './core/war.js';
+import { runAITick } from './core/ai.js';
 
 export class Campaign {
     /**
@@ -25,6 +28,9 @@ export class Campaign {
             focusTrees: loaded.focusTrees,
             events: loaded.events,
             decisions: loaded.decisions,
+            equipment: loaded.equipment,
+            techs: loaded.techs,
+            divisions: loaded.divisions,
         };
         this.seed = opts.seed ?? 0x1936;
         this.rng = new Rng(this.seed);
@@ -32,6 +38,19 @@ export class Campaign {
         this.clock.onStep = (tick) => this.onTick(tick);
         this.state = null;
         this._listeners = {};
+        this._mapIndex = null;   // 地图索引（邻接表），由渲染层注入，供部队移动判定
+        this.aiEnabled = false;  // AI 决策开关（AI-only 模式 / 压测）
+    }
+
+    /** 开关 AI 决策（所有非玩家国家由 AI 接管） */
+    setAI(enabled) {
+        this.aiEnabled = !!enabled;
+        return this.aiEnabled;
+    }
+
+    /** 注入地图索引：省份 id → 邻接省份 id 列表 */
+    setMapIndex(index) {
+        this._mapIndex = index || null;
     }
 
     /** 异步创建：加载并校验剧本 */
@@ -57,6 +76,10 @@ export class Campaign {
             focusTrees: this.content.focusTrees,
             events: this.content.events,
             decisions: this.content.decisions,
+            equipment: this.content.equipment,
+            techs: this.content.techs,
+            divisions: this.content.divisions,
+            neighbors: this._mapIndex?.neighbors || null,
             scenario: this.scenario,
             applyEffects,
             strict: true,
@@ -74,12 +97,19 @@ export class Campaign {
         // 每 tick：国策进度推进
         this.advanceFocuses();
 
-        // 每 tick = 2 游戏日：政治/人力等日结算随每 tick 执行（W2 落地，此处为占位钩子）
+        // 每 tick = 1 游戏日：政治/经济/军事日结算
         this.dailySettlement();
 
-        // 月界（每 15 tick = 30 游戏日）：任务/胜负月度评估
+        // 经济结算（资源 / 生产线 / 建造 / 科研 / 人力 / 政治点数）
+        this.lastEconomy = settleEconomy(s, this.ctx());
+
+        // 军事结算（战斗 / 占领 / 州归属翻转 / 战争分数）
+        this.lastWar = settleWar(s, this.ctx());
+
+        // 月界（每 30 tick = 30 游戏日）：任务/胜负月度评估 + AI 决策
         if (this.clock.isMonthStart) {
             enqueue(s, 'missionEval', {});
+            if (this.aiEnabled) this.aiTick();
         }
 
         // 排空规则级联队列
@@ -90,6 +120,20 @@ export class Campaign {
             this.emit('victory', { state: s, victory: s.victory });
         }
         this.emit('tick', { tick, state: s });
+    }
+
+    /**
+     * AI 决策：每月对每个 AI 国家做一轮效用打分，全部走命令管道。
+     * 关闭时（默认）零开销，不产生任何状态变更。
+     */
+    aiTick() {
+        if (!this.aiEnabled) return;
+        const s = this.state;
+        runAITick(s, this.ctx(), {
+            players: s.players,
+            isHuman: (tag) => !!s.players[tag]?.isHuman,
+            command: (cmd) => this.command(cmd),
+        });
     }
 
     /** 国策进度：每 tick 推进，完成时入队 focusCompleted 规则 */
@@ -122,9 +166,12 @@ export class Campaign {
         }
     }
 
-    /** 快进 n 个 tick（演示/测试用，等价于连续 onTick） */
+    /** 快进 n 个 tick（演示/测试用，等价于连续 onTick，并同步推进时钟以触发月界） */
     fastForward(n) {
-        for (let i = 0; i < n; i++) this.onTick(this.clock.tick + 1);
+        for (let i = 0; i < n; i++) {
+            this.clock.tick += 1;
+            this.onTick(this.clock.tick);
+        }
     }
 
     // ===================== 命令入口 =====================

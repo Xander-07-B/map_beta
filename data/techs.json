@@ -1,0 +1,43 @@
+{
+  "techs": {
+    "infantry_weapons": { "name": "步兵武器", "cat": "army", "icon": "✕", "time": 120, "requires": [], "effects": [{ "divisionBonus": { "infantry": { "attack": 0.1 } } }] },
+    "inf_weapons_1": { "name": "步兵武器研究", "cat": "army", "icon": "✕", "time": 120, "requires": [], "effects": [{ "divisionBonus": { "infantry": { "attack": 0.1 } } }] },
+    "artillery": { "name": "火炮技术", "cat": "army", "icon": "◎", "time": 180, "requires": [], "effects": [{ "divisionBonus": { "attack": 0.1 } }] },
+    "infantry_tactics": { "name": "步兵战术", "cat": "army", "icon": "⬢", "time": 150, "requires": ["infantry_weapons"], "effects": [{ "divisionBonus": { "infantry": { "defense": 0.15 } } }] },
+    "support_weapon": { "name": "支援武器", "cat": "army", "icon": "⌖", "time": 200, "requires": ["artillery"], "effects": [{ "divisionBonus": { "attack": 0.08 } }] },
+    "mountain_warfare": { "name": "山地作战", "cat": "army", "icon": "▲", "time": 180, "requires": ["infantry_tactics"], "effects": [{ "unlockTemplate": "mountain" }, { "terrainDefense": { "mountain": 0.5 } }] },
+    "mechanized_infantry": { "name": "机械步兵", "cat": "army", "icon": "◫", "time": 240, "requires": ["infantry_tactics", "automotive"], "effects": [{ "unlockTemplate": "mechanized" }] },
+    "armored_tactics": { "name": "装甲战术", "cat": "army", "icon": "▣", "time": 270, "requires": ["mechanized_infantry", "medium_tank_design"], "effects": [{ "unlockTemplate": "armor" }, { "divisionBonus": { "armor": { "attack": 0.15 } } }] },
+    "cavalry_tactics": { "name": "骑兵战术", "cat": "army", "icon": "⚃", "time": 120, "requires": [], "effects": [{ "unlockTemplate": "cavalry" }, { "divisionBonus": { "cavalry": { "speed": 1 } } }] },
+    "military_engineering": { "name": "军事工程", "cat": "army", "icon": "⬡", "time": 220, "requires": ["infantry_tactics"], "effects": [{ "divisionBonus": { "defense": 0.1 } }] },
+
+    "automotive": { "name": "汽车工业", "cat": "industry", "icon": "⛃", "time": 150, "requires": [], "effects": [{ "factoryBonus": { "civs": 0.1 } }] },
+    "industrial_engineering": { "name": "工业工程", "cat": "industry", "icon": "⚙", "time": 200, "requires": ["automotive"], "effects": [{ "factoryBonus": { "civs": 0.15 } }] },
+    "advanced_engineering": { "name": "高级工程", "cat": "industry", "icon": "⬢", "time": 280, "requires": ["industrial_engineering"], "effects": [{ "factoryBonus": { "all": 0.1 } }] },
+    "steel_alloys": { "name": "合金钢", "cat": "industry", "icon": "◆", "time": 220, "requires": ["industrial_engineering"], "effects": [{ "factoryBonus": { "military": 0.15 } }] },
+    "railways": { "name": "铁路工程", "cat": "industry", "icon": "⌗", "time": 180, "requires": ["automotive"], "effects": [{ "construction": 0.25 }] },
+    "synthetic_refining": { "name": "合成炼油", "cat": "industry", "icon": "●", "time": 300, "requires": ["advanced_engineering"], "effects": [{ "resourceBonus": { "oil": 0.3 } }] },
+
+    "naval_engineering_1": { "name": "海军工程(初)", "cat": "navy", "icon": "⚓", "time": 150, "requires": [], "effects": [{ "navyBuild": 0.1 }] },
+    "destroyer_hull": { "name": "驱逐舰船体", "cat": "navy", "icon": "⚓", "time": 180, "requires": ["naval_engineering_1"], "effects": [{ "unlockEquipment": "destroyer" }] },
+    "cruiser_hull": { "name": "巡洋舰船体", "cat": "navy", "icon": "⚓", "time": 240, "requires": ["destroyer_hull"], "effects": [{ "unlockEquipment": "cruiser" }] },
+    "carrier_hull": { "name": "航母船体", "cat": "navy", "icon": "⚓", "time": 320, "requires": ["cruiser_hull", "naval_engineering_2"], "effects": [{ "unlockEquipment": "carrier" }] },
+    "naval_engineering_2": { "name": "海军工程(高)", "cat": "navy", "icon": "⚓", "time": 280, "requires": ["cruiser_hull"], "effects": [{ "navyBuild": 0.15 }] },
+
+    "aero_dynamics": { "name": "空气动力学", "cat": "air", "icon": "✈", "time": 180, "requires": [], "effects": [{ "airBuild": 0.1 }] },
+    "fighter_design": { "name": "战斗机设计", "cat": "air", "icon": "✈", "time": 200, "requires": ["aero_dynamics"], "effects": [{ "unlockEquipment": "fighter" }] },
+    "bomber_design": { "name": "轰炸机设计", "cat": "air", "icon": "✈", "time": 240, "requires": ["aero_dynamics"], "effects": [{ "unlockEquipment": "bomber" }] },
+    "tactical_bomber": { "name": "战术轰炸机", "cat": "air", "icon": "✈", "time": 280, "requires": ["bomber_design"], "effects": [{ "unlockEquipment": "tactical_bomber" }] },
+    "radar_tech": { "name": "雷达技术", "cat": "air", "icon": "⌖", "time": 300, "requires": ["fighter_design"], "effects": [{ "airDefense": 0.2 }, { "unlockEquipment": "radar" }] },
+
+    "light_tank_design": { "name": "轻坦设计", "cat": "army", "icon": "◫", "time": 180, "requires": ["automotive"], "effects": [{ "unlockEquipment": "light_tank" }] },
+    "medium_tank_design": { "name": "中坦设计", "cat": "army", "icon": "▣", "time": 260, "requires": ["light_tank_design", "steel_alloys"], "effects": [{ "unlockEquipment": "medium_tank" }] },
+    "heavy_tank_design": { "name": "重坦设计", "cat": "army", "icon": "█", "time": 340, "requires": ["medium_tank_design", "advanced_engineering"], "effects": [{ "unlockEquipment": "heavy_tank" }] },
+    "infantry_equipment": { "name": "步兵装备", "cat": "army", "icon": "✕", "time": 100, "requires": [], "effects": [{ "unlockEquipment": "infantry_weapon" }] },
+    "artillery_design": { "name": "火炮设计", "cat": "army", "icon": "◎", "time": 160, "requires": ["infantry_equipment"], "effects": [{ "unlockEquipment": "artillery" }] },
+
+    "cipher_machine": { "name": "密码机", "cat": "support", "icon": "⚷", "time": 240, "requires": [], "effects": [{ "intelligence": 0.25 }] },
+    "paratroopers": { "name": "空降兵", "cat": "army", "icon": "✸", "time": 300, "requires": ["aero_dynamics", "infantry_tactics"], "effects": [{ "divisionBonus": { "infantry": { "attack": 0.2 } } }] },
+    "nuclear_fission": { "name": "核裂变", "cat": "support", "icon": "☢", "time": 420, "requires": ["advanced_engineering", "radar_tech"], "effects": [{ "nuclear": true }] }
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "divisions": {
+    "infantry": {
+      "name": "步兵师", "icon": "✕", "baseStrength": 15, "org": 1.0,
+      "cost": { "manpower": 8, "equipment": { "infantry_weapon": 6, "artillery": 2 } },
+      "speed": 2, "requires": {}
+    },
+    "mountain": {
+      "name": "山地师", "icon": "▲", "baseStrength": 12, "org": 1.0,
+      "cost": { "manpower": 7, "equipment": { "infantry_weapon": 5, "artillery": 2 } },
+      "speed": 2, "requires": { "tech": "mountain_warfare" },
+      "terrainBonus": { "mountain": 0.5, "forest": 0.3 }
+    },
+    "mechanized": {
+      "name": "机械师", "icon": "◫", "baseStrength": 20, "org": 0.9,
+      "cost": { "manpower": 6, "equipment": { "infantry_weapon": 4, "truck": 4, "light_tank": 2 } },
+      "speed": 6, "requires": { "tech": "mechanized_infantry" }
+    },
+    "armor": {
+      "name": "装甲师", "icon": "█", "baseStrength": 35, "org": 0.85,
+      "cost": { "manpower": 4, "equipment": { "light_tank": 6, "medium_tank": 3, "truck": 2 } },
+      "speed": 10, "requires": { "tech": "armored_tactics" }
+    },
+    "cavalry": {
+      "name": "骑兵师", "icon": "⚃", "baseStrength": 18, "org": 0.95,
+      "cost": { "manpower": 5, "equipment": { "infantry_weapon": 3 } },
+      "speed": 8, "requires": {},
+      "terrainBonus": { "plain": 0.2 }
+    }
+  }
+}

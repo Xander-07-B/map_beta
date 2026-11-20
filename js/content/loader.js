@@ -43,6 +43,44 @@ async function fetchScenarioFile(fetchJson, base, id) {
 }
 
 /**
+ * 加载全局内容（不随剧本变化）：装备、科技、部队模板。
+ * 单独成函数，失败即抛错——这些是经济与军事系统的底座，缺一个整个模拟层都无法结算。
+ */
+async function loadCoreContent(fetchJson, contentBase) {
+    const load = async (name) => {
+        const raw = await fetchJson(`${contentBase}/${name}`);
+        if (!raw || typeof raw !== 'object') throw new Error(`${name} 内容文件格式非法`);
+        return raw;
+    };
+    const [eqRaw, techRaw, divRaw] = await Promise.all([
+        load('equipment.json'),
+        load('techs.json'),
+        load('divisions.json'),
+    ]);
+    const equipment = eqRaw.equipment || {};
+    const techs = techRaw.techs || {};
+    const divisions = divRaw.divisions || {};
+
+    const problems = [];
+    for (const [id, eq] of Object.entries(equipment)) {
+        if (typeof eq.cost !== 'number' || eq.cost <= 0) problems.push(`equipment.${id}.cost 必须为正数`);
+    }
+    for (const [id, t] of Object.entries(techs)) {
+        if (typeof t.time !== 'number' || t.time <= 0) problems.push(`techs.${id}.time 必须为正数`);
+        for (const pre of t.requires || []) {
+            if (!(pre in techs)) problems.push(`techs.${id}: 前置科技不存在: ${pre}`);
+        }
+    }
+    for (const [id, d] of Object.entries(divisions)) {
+        if (typeof d.baseStrength !== 'number') problems.push(`divisions.${id}.baseStrength 缺失`);
+        if (!d.cost || typeof d.cost.manpower !== 'number') problems.push(`divisions.${id}.cost.manpower 缺失`);
+    }
+    if (problems.length) throw new Error(`核心内容校验失败:\n- ${problems.join('\n- ')}`);
+
+    return { equipment, techs, divisions };
+}
+
+/**
  * 加载剧本。
  * @param {string} id 剧本 id（如 '1936'）
  * @param {object} [opts]
@@ -55,6 +93,7 @@ export async function loadScenario(id, opts = {}) {
     const base = opts.base ?? 'data/scenarios';
     const contentBase = opts.contentBase ?? 'data';
 
+    const content = await loadCoreContent(fetchJson, contentBase);
     const raw = await fetchScenarioFile(fetchJson, base, id);
 
     if (raw.base) {
@@ -135,5 +174,6 @@ export async function loadScenario(id, opts = {}) {
         focusTrees,
         events,
         decisions,
+        ...content,
     };
 }

@@ -23,10 +23,26 @@ const UI = {
     },
     fp(v) { return window.Core.fromFP(v); },   // 定点 → 浮点
 
+    /** 命令失败时弹出提示（成功则静默） */
+    notify(r) {
+        if (r && r.ok) return;
+        const err = (r && r.err) || '命令执行失败';
+        this.showModal('提示', `<p>${err}</p>`,
+            [{ text: '确定', cls: 'primary', action: () => this.closeModal() }]);
+    },
+
+    /** 部署目标省份：优先当前选中省份（须为己方控制），否则取首个控制省份 */
+    deployTarget(tag) {
+        const sel = this.game.selectedProvince;
+        const mine = this.game.provincesOf(tag);
+        if (sel !== null && mine.some((p) => p.id === sel)) return sel;
+        return mine[0]?.id ?? null;
+    },
+
     // ===================== 面板弹窗开关 =====================
     panelTitles: {
         overview: '总览', politics: '政治', economy: '经济',
-        production: '生产', tech: '科技', diplomacy: '外交',
+        production: '生产', army: '部队', tech: '科技', diplomacy: '外交',
         intelligence: '情报', log: '日志'
     },
 
@@ -92,6 +108,14 @@ const UI = {
         document.getElementById('countryTag').textContent = c.tag;
         document.getElementById('countryName').textContent = `${c.flag} ${this.tt(c.name)} · ${ideo.icon} ${ideo.name}`;
         document.getElementById('dateText').textContent = this.game.formatDate();
+
+        // 暂停提示：速度为 0 时提醒玩家手动推进
+        document.getElementById('pauseHint').classList.toggle('hidden', this.game.speed > 0);
+
+        // 速度按钮高亮与实际速度同步（AI 模式、事件恢复等程序内改速也要跟上）
+        document.querySelectorAll('.speed-btn').forEach(btn => {
+            btn.classList.toggle('active', Number(btn.dataset.speed) === this.game.speed);
+        });
     },
 
     // ===================== 底部状态栏 =====================
@@ -144,17 +168,23 @@ const UI = {
             <span class="stat-value">${c.docks}</span>
         </div>`;
 
-        // 军事（驻军存在性，无战斗结算）
+        // 军事（部队 + 驻军存在性）
         const milBox = document.getElementById('statMilitary');
         const myGarrison = this.game.garrisons().filter(g => g.owner === tag).length;
+        const myArmies = this.game.armiesOf(tag).length;
         const war = this.game.isWarFor(tag);
+        const wars = this.game.state.wars.filter(w => w.a === tag || w.b === tag).length;
         milBox.innerHTML = `<div class="stat-item">
+            <span class="stat-label">⚔ 部队</span>
+            <span class="stat-value">${myArmies}</span>
+        </div>
+        <div class="stat-item">
             <span class="stat-label">✕ 驻军区</span>
             <span class="stat-value">${myGarrison}</span>
         </div>
         <div class="stat-item">
             <span class="stat-label">${war ? '● 战争中' : '○ 和平'}</span>
-            <span class="stat-value ${war ? 'neg' : 'pos'}">${war ? '是' : '否'}</span>
+            <span class="stat-value ${war ? 'neg' : 'pos'}">${war ? `${wars} 场` : '否'}</span>
         </div>`;
     },
 
@@ -215,6 +245,7 @@ const UI = {
             case 'politics': html = this.renderPolitics(); break;
             case 'economy': html = this.renderEconomy(); break;
             case 'production': html = this.renderProduction(); break;
+            case 'army': html = this.renderArmy(); break;
             case 'tech': html = this.renderTech(); break;
             case 'diplomacy': html = this.renderDiplomacy(); break;
             case 'intelligence': html = this.renderIntelligence(); break;
@@ -328,32 +359,54 @@ const UI = {
     renderEconomy() {
         const tag = this.game.playerTag;
         const c = this.game.playerCountry();
+        const eco = window.Core.economyOf(this.game.campaign.scenario);
+        const cap = window.Core.capacityOf(c, eco);
+        const resBonus = c.bonuses?.resource || {};
+        const CONSTRUCTION = window.Core.CONSTRUCTION || {};
         return `
         <div class="panel-section">
-            <h4>工厂</h4>
+            <h4>产能</h4>
             <div class="panel-row"><span class="pr-label">民用工厂</span><span class="pr-value">${c.civs}</span></div>
             <div class="panel-row"><span class="pr-label">军用工厂</span><span class="pr-value">${c.mils}</span></div>
             <div class="panel-row"><span class="pr-label">船坞</span><span class="pr-value">${c.docks}</span></div>
-            <div class="panel-row"><span class="pr-label">人力</span><span class="pr-value">${Math.round(c.manpower)}</span></div>
+            <div class="panel-row"><span class="pr-label">人力 / 人口</span>
+                <span class="pr-value">${Math.round(c.manpower)} / ${Math.round(c.population)}</span></div>
+            <div class="panel-row"><span class="pr-label">综合产能</span>
+                <span class="pr-value ${cap >= 1 ? 'pos' : ''}">${Math.round(cap * 100)}%</span></div>
+            <div class="panel-bar"><div class="panel-bar-fill" style="width:${Math.min(100, cap * 100)}%;background:var(--green)"></div></div>
         </div>
         <div class="panel-section">
             <h4>资源持有</h4>
             ${Object.entries(c.resources || {}).map(([k, v]) => {
                 const def = RESOURCES[k];
+                const base = eco.income[k];
+                const up = base !== undefined ? `<span style="color:var(--text-dim);font-size:11px">+${(base * cap * (1 + (resBonus[k] || 0))).toFixed(2)}/日</span>` : '';
                 return `<div class="panel-row">
                     <span class="pr-label">${def ? def.icon + ' ' + def.name : k}</span>
-                    <span class="pr-value">${Math.round(v)}</span>
+                    <span class="pr-value">${Math.round(v)} ${up}</span>
                 </div>`;
             }).join('') || '<div style="font-size:12px;color:var(--text-dim)">无资源</div>'}
         </div>
         <div class="panel-section">
+            <h4>装备库存</h4>
+            ${Object.entries(c.equipment || {}).filter(([, v]) => v > 0).map(([k, v]) => {
+                const def = this.game.equipment[k];
+                return `<div class="panel-row">
+                    <span class="pr-label">${def ? def.icon + ' ' + def.name : k}</span>
+                    <span class="pr-value">${Math.round(v)}</span>
+                </div>`;
+            }).join('') || '<div style="font-size:12px;color:var(--text-dim)">无库存（需通过生产线生产）</div>'}
+        </div>
+        <div class="panel-section">
             <h4>建设队列</h4>
             ${(c.construction || []).length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">无建造项目</div>' :
-                (c.construction || []).map((b, i) => `
+                (c.construction || []).map((b) => `
                     <div class="panel-row">
-                        <span class="pr-label">${b.kind}</span>
-                        <span class="pr-value">州 ${b.state} · ${Math.round((b.progress / 100) * 100)}%</span>
-                    </div>`).join('')}
+                        <span class="pr-label">${CONSTRUCTION[b.kind]?.name || b.kind}</span>
+                        <span class="pr-value">${Math.min(100, Math.round(b.progress || 0))}%</span>
+                    </div>
+                    <div class="panel-bar"><div class="panel-bar-fill" style="width:${Math.min(100, b.progress || 0)}%;background:var(--orange)"></div></div>
+                `).join('')}
         </div>`;
     },
 
@@ -361,26 +414,106 @@ const UI = {
     renderProduction() {
         const tag = this.game.playerTag;
         const c = this.game.playerCountry();
+        const equipment = this.game.equipment;
         const queue = c.production || [];
+        const usedMils = queue.reduce((sum, l) => sum + (l.factories || 1), 0);
         return `
         <div class="panel-section">
             <h4>生产线 (${queue.length})</h4>
-            ${queue.length === 0 ? '<div style="font-size:12px;color:var(--text-dim);margin-bottom:10px">未分配生产线。</div>' : ''}
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
+                军用工厂 ${c.mils} · 已分配 ${usedMils} · 每条产线按「分配工厂数 ÷ 装备成本」每日产出
+            </div>
+            ${queue.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">未分配生产线。</div>' : ''}
             ${queue.map((item, i) => {
-                const eq = EQUIPMENT[item.equipment];
+                const eq = equipment[item.equipment];
+                const canDown = (item.factories || 1) > 1;
+                const canUp = (item.factories || 1) < (c.mils || 0);
                 return `<div class="prod-row">
                     <span class="prod-icon">${eq ? eq.icon : '▢'}</span>
-                    <span class="prod-name">${eq ? eq.name : item.equipment} <span style="color:var(--text-dim);font-size:11px">(优先${item.priority})</span></span>
+                    <span class="prod-name">${eq ? eq.name : item.equipment}
+                        <span style="color:var(--text-dim);font-size:11px">· ${item.factories || 1} 厂</span></span>
+                    <button class="btn-action" data-prod-adj="${i}" data-delta="-1" ${canDown ? '' : 'disabled'}>−</button>
+                    <button class="btn-action" data-prod-adj="${i}" data-delta="1" ${canUp ? '' : 'disabled'}>+</button>
                     <button class="btn-action" data-prod-remove="${i}" style="padding:2px 8px;margin:0">✕</button>
                 </div>`;
             }).join('')}
         </div>
         <div class="panel-section">
             <h4>分配生产线</h4>
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">军用工厂：${c.mils}</div>
-            ${Object.entries(EQUIPMENT).map(([k, eq]) => `
-                <button class="btn-action" data-prod-add="${k}">${eq.icon} ${eq.name}</button>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
+                点击为队列追加一条产线（每条默认 1 个军用工厂）
+            </div>
+            ${Object.entries(equipment).map(([k, eq]) => `
+                <button class="btn-action" data-prod-add="${k}">${eq.icon} ${eq.name}
+                    <span style="color:var(--text-dim);font-size:11px">· ${eq.cost} 天/件</span></button>
             `).join('')}
+        </div>`;
+    },
+
+    // ----- 部队 -----
+    renderArmy() {
+        const tag = this.game.playerTag;
+        const c = this.game.playerCountry();
+        const divisions = this.game.divisions;
+        const armies = this.game.armiesOf(tag);
+        const templates = this.game.availableTemplates(tag);
+        const selProv = this.game.selectedProvince;
+
+        // 可部署省份：玩家控制的省份
+        const myProvinces = this.game.provincesOf(tag);
+        const deployable = myProvinces.length > 0;
+
+        return `
+        <div class="panel-section">
+            <h4>部队（${armies.length}）</h4>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
+                人力 ${Math.round(c.manpower)} · 补给 ${Math.round(c.resources.supplies || 0)}
+            </div>
+            ${armies.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">尚无部队，从下方部署。</div>' :
+                armies.map((a) => {
+                    const prov = this.game.provinceById(a.provinceId);
+                    const tpl = divisions[a.template];
+                    const adj = this.game.index?.neighbors?.[String(a.provinceId)] || [];
+                    return `<div class="army-card">
+                        <div class="ac-name">${tpl ? tpl.icon + ' ' + tpl.name : a.template}
+                            <span style="color:var(--text-dim);font-size:11px">· ${prov ? prov.name : a.provinceId}</span></div>
+                        <div class="ac-strength">兵力 ${Math.round(a.strength)} · 组织度 ${Math.round(a.org * 100)}% · 速度 ${a.speed}</div>
+                        <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">
+                            ${adj.length === 0 ? '<span style="font-size:11px;color:var(--text-dim)">无可移动方向</span>' :
+                                adj.map((nid) => {
+                                    const n = this.game.provinceById(Number(nid));
+                                    const blocked = !this.game.canCommand({ t: 'moveArmy', armyId: a.id, to: Number(nid) });
+                                    return `<button class="btn-action" data-move-army="${a.id}" data-to="${nid}" ${blocked ? 'disabled' : ''}>
+                                        ${n ? n.name : nid}</button>`;
+                                }).join('')}
+                            <button class="btn-action" data-disband="${a.id}">解散</button>
+                        </div>
+                    </div>`;
+                }).join('')}
+        </div>
+        <div class="panel-section">
+            <h4>部署部队</h4>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
+                部署需消耗人力与装备库存。目标省份：<b>${selProv ? selProv.name : '未选择（默认首个控制省份）'}</b>
+            </div>
+            ${templates.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">未解锁任何部队模板，需先研究对应科技。</div>' :
+                templates.map((tplId) => {
+                    const tpl = divisions[tplId];
+                    const cost = this.game.divisionCost(tplId);
+                    const target = selProv && myProvinces.some((p) => p.id === selProv.id)
+                        ? selProv.id : myProvinces[0]?.id;
+                    const can = !this.game.canCommand({
+                        t: 'deployArmy', country: tag, province: target, template: tplId, count: 1,
+                    });
+                    return `<div class="focus-card">
+                        <div style="font-weight:600">${tpl.icon} ${tpl.name}</div>
+                        <div style="font-size:11px;color:var(--text-dim);margin-top:3px">
+                            人力 ${cost.manpower} · ${Object.entries(cost.equipment).map(([k, v]) =>
+                                `${this.game.equipment[k]?.name || k}×${v}`).join('、') || '无装备消耗'}
+                        </div>
+                        <button class="btn-action" data-deploy="${tplId}" ${can ? 'disabled' : ''}>部署 1 支</button>
+                    </div>`;
+                }).join('')}
         </div>`;
     },
 
@@ -389,7 +522,26 @@ const UI = {
         const tag = this.game.playerTag;
         const c = this.game.playerCountry();
         const r = this.game.state.research[tag];
-        const techIds = Object.keys(c.research || {});
+        const techs = this.game.techs;
+        const done = c.tech || {};
+        const busy = new Set(r.researching.map((x) => x.techId));
+        const slotsFree = (c.researchSlots || 0) - r.researching.length;
+
+        const rows = Object.entries(techs).map(([id, t]) => {
+            const isDone = !!done[id];
+            const isBusy = busy.has(id);
+            const prereqOk = (t.requires || []).every((pre) => done[pre]);
+            return { id, tech: t, done: isDone, busy: isBusy, prereqOk, locked: !prereqOk };
+        });
+        // 可研究优先，其次按类别与耗时排序
+        const catRank = { army: 0, industry: 1, navy: 2, air: 3, support: 4 };
+        rows.sort((a, b) => {
+            const av = a.done ? 2 : (a.busy ? 1 : (a.prereqOk ? 0 : 3));
+            const bv = b.done ? 2 : (b.busy ? 1 : (b.prereqOk ? 0 : 3));
+            if (av !== bv) return av - bv;
+            return (catRank[a.tech.cat] ?? 9) - (catRank[b.tech.cat] ?? 9) || a.tech.time - b.tech.time;
+        });
+
         return `
         <div class="panel-section">
             <h4>科研槽 (${r.researching.length}/${c.researchSlots})</h4>
@@ -397,12 +549,12 @@ const UI = {
                 ${Array.from({ length: Math.max(c.researchSlots, 1) }).map((_, i) => {
                     const item = r.researching[i];
                     if (item) {
-                        const tech = TECHS.find(t => t.id === item.techId) || { name: item.techId, time: 100 };
+                        const tech = techs[item.techId] || { name: item.techId, time: 100 };
                         const pct = Math.min(100, (item.progress / (tech.time || 100)) * 100);
                         return `<div class="tech-slot-item filled" style="cursor:default">
                             <div style="font-weight:600">${tech.icon || '⚛'} ${tech.name}</div>
                             <div class="tc-progress" style="margin-top:4px"><div class="tc-progress-fill" style="width:${pct}%"></div></div>
-                            <div style="margin-top:2px">${Math.round(pct)}%</div>
+                            <div style="margin-top:2px">${Math.round(pct)}% · 第 ${Math.round(item.progress)} 天</div>
                         </div>`;
                     }
                     return `<div class="tech-slot-item" data-tech-slot="${i}">+ 研究</div>`;
@@ -410,19 +562,20 @@ const UI = {
             </div>
         </div>
         <div class="panel-section">
-            <h4>科技</h4>
-            ${techIds.map(tid => {
-                const done = r.completed.includes(tid);
-                const inProgress = r.researching.some(x => x.techId === tid);
-                const tech = TECHS.find(t => t.id === tid) || { name: tid, cat: '其他', time: 100, effect: '' };
-                const can = !done && !inProgress && r.researching.length < c.researchSlots &&
-                    !this.game.canCommand({ t: 'startResearch', country: tag, techId: tid });
-                return `<div class="tech-card ${done ? 'done' : (inProgress ? 'active' : '')}">
+            <h4>科技树（${rows.length} 项，可研究 ${rows.filter((x) => x.prereqOk && !x.done && !x.busy).length} 项）</h4>
+            ${rows.map(({ id, tech, done: isDone, busy: isBusy, prereqOk }) => {
+                const can = !isDone && !isBusy && prereqOk && slotsFree > 0 &&
+                    !this.game.canCommand({ t: 'startResearch', country: tag, techId: id });
+                const missing = (tech.requires || []).filter((pre) => !done[pre]);
+                return `<div class="tech-card ${isDone ? 'done' : (isBusy ? 'active' : (prereqOk ? '' : 'locked'))}">
                     <div class="tc-name">${tech.icon || '⚛'} ${tech.name}</div>
-                    <div class="tc-cat">${tech.cat || ''} · ${tech.time || 0}天 ${done ? '✓ 已完成' : ''}</div>
-                    ${!done && !inProgress ? `<button class="btn-action" data-tech="${tid}" ${can ? 'disabled' : ''}>开始研究</button>` : ''}
+                    <div class="tc-cat">${tech.cat || ''} · ${tech.time} 天 ${isDone ? '✓ 已完成' : (isBusy ? '· 研究中' : '')}</div>
+                    <div style="font-size:11px;color:var(--text-dim);margin-top:2px">${tech.effect || ''}</div>
+                    ${!isDone && !isBusy ? `
+                        ${!prereqOk ? `<div style="font-size:11px;color:var(--text-dim)">前置：${missing.join('、')}</div>` : ''}
+                        <button class="btn-action" data-tech="${id}" ${can ? 'disabled' : ''}>开始研究</button>` : ''}
                 </div>`;
-            }).join('') || '<div style="font-size:12px;color:var(--text-dim)">无可用科技</div>'}
+            }).join('')}
         </div>`;
     },
 
@@ -542,8 +695,9 @@ const UI = {
 
     // ===================== 事件弹窗（战役事件） =====================
     showCampaignEvent(eventId, event) {
-        // 事件弹窗出现时暂停时间推进（指南）
-        this._eventPauseSpeed = this.game.speed || 1;
+        // 事件弹窗出现时暂停时间推进；记录真实速度（可能本来就是 0），
+        // 否则玩家暂停中处理事件后会被强行恢复成 1x
+        this._eventPauseSpeed = this.game.speed;
         this.game.speed = 0;
 
         const title = this.tt(`event.${eventId}.title`, { event: eventId });
@@ -610,16 +764,61 @@ const UI = {
         // 生产
         document.querySelectorAll('[data-prod-add]').forEach(el => {
             el.addEventListener('click', () => {
-                const eq = el.dataset.prodAdd;
-                const r = this.game.command({ t: 'allocateFactory', country: tag, line: { equipment: eq, priority: 1 } });
-                if (!r.ok) this.showModal('提示', `<p>${r.err}</p>`, [{ text: '确定', cls: 'primary', action: () => this.closeModal() }]);
+                const r = this.game.command({
+                    t: 'allocateFactory', country: tag,
+                    line: { equipment: el.dataset.prodAdd, factories: 1, priority: 1 },
+                });
+                this.notify(r);
                 this.refreshAll();
             });
         });
         document.querySelectorAll('[data-prod-remove]').forEach(el => {
             el.addEventListener('click', () => {
-                const c = this.game.countryById(tag);
-                c.production = [];
+                const r = this.game.command({ t: 'cancelProduction', country: tag, index: Number(el.dataset.prodRemove) });
+                this.notify(r);
+                this.refreshAll();
+            });
+        });
+        document.querySelectorAll('[data-prod-adj]').forEach(el => {
+            el.addEventListener('click', () => {
+                const line = this.game.countryById(tag).production?.[Number(el.dataset.prodAdj)];
+                if (!line) return;
+                const r = this.game.command({
+                    t: 'adjustProduction', country: tag,
+                    index: Number(el.dataset.prodAdj), factories: (line.factories || 1) + Number(el.dataset.delta),
+                });
+                this.notify(r);
+                this.refreshAll();
+            });
+        });
+        // 部队
+        document.querySelectorAll('[data-deploy]').forEach(el => {
+            el.addEventListener('click', () => {
+                const target = this.deployTarget(tag);
+                if (target === null) {
+                    this.showModal('提示', '<p>请先在地图上选择一个自己控制的省份。</p>',
+                        [{ text: '确定', cls: 'primary', action: () => this.closeModal() }]);
+                    return;
+                }
+                const r = this.game.command({
+                    t: 'deployArmy', country: tag, province: target, template: el.dataset.deploy, count: 1,
+                });
+                this.notify(r);
+                this.refreshAll();
+            });
+        });
+        document.querySelectorAll('[data-move-army]').forEach(el => {
+            el.addEventListener('click', () => {
+                const r = this.game.command({
+                    t: 'moveArmy', armyId: Number(el.dataset.moveArmy), to: Number(el.dataset.to),
+                });
+                this.notify(r);
+                this.refreshAll();
+            });
+        });
+        document.querySelectorAll('[data-disband]').forEach(el => {
+            el.addEventListener('click', () => {
+                this.game.command({ t: 'disbandArmy', armyId: Number(el.dataset.disband) });
                 this.refreshAll();
             });
         });

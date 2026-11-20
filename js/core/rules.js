@@ -9,6 +9,7 @@ import { applyCommand } from './commands.js';
 import { recomputeVictoryPoints, clearAtWar } from './state.js';
 import { FP_SCALE, fpAddClamp01, orderedKeys } from './determinism.js';
 import { formatDate, parseDate, TICK_GAME_DAYS } from './clock.js';
+import { installWarRules } from './war.js';
 
 export const RULES = {};
 
@@ -168,6 +169,9 @@ function pushHistory(s, text) {
 export function installCoreRules() {
     if (installCoreRules._done) return;
     installCoreRules._done = true;
+
+    // 军事规则（战斗 / 占领）与经济、政治规则同源注册
+    installWarRules(registerRule);
 
     // 州归属变更 → 州内省份控制方同步转移 → 重算 VP → 任务重估 → 胜负重判
     registerRule('ownerChanged', ({ state, to, reason }, s, ctx) => {

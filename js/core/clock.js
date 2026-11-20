@@ -1,25 +1,28 @@
 /* ============================================================
  * 战役核心 · 逻辑时钟（clock.js）
- * 约定：1 tick = 30 真实秒（1x 速度）= 2 游戏日。
- *   → 1 游戏日 = 0.5 tick；1 游戏月（30 天）= 15 tick
- *   → 月界：gameDay % 30 === 0，即 tick % 15 === 0
- *   → 日界：2 天一跳，无逐日概念；日结算随每 tick 执行（每 tick 覆盖 2 天）
+ * 约定：1 tick = 1 游戏日。
+ *   → 月界：gameDay % 30 === 0，即 tick % 30 === 0
+ *   → 日界：每 tick 即一日，日结算随每 tick 执行
  * 真实时间换算：1x 速度下每 tick 消耗 TICK_REAL_MS 毫秒，
- * 倍速按 speed 线性缩放。用 requestAnimationFrame 的 dt 累加，
- * 不用 setInterval——后台标签页被节流后时间会错乱。
+ * 倍速按 speed 线性缩放（0 暂停 / 1~MAX_SPEED 倍速）。
+ * 用 requestAnimationFrame 的 dt 累加，不用 setInterval——
+ * 后台标签页被节流后时间会错乱。
  * ============================================================ */
 
 /** 每个 tick 推进的游戏日数 */
-export const TICK_GAME_DAYS = 2;
+export const TICK_GAME_DAYS = 1;
 
 /** 月结算周期（固定 30 天，确定性，不依赖日历月长度） */
 export const DAYS_PER_MONTH = 30;
 
 /** 一个月对应的 tick 数 */
-export const TICKS_PER_MONTH = DAYS_PER_MONTH / TICK_GAME_DAYS; // 15
+export const TICKS_PER_MONTH = DAYS_PER_MONTH / TICK_GAME_DAYS; // 30
 
-/** 1x 速度下，推进 1 个 tick 所需的真实毫秒（30 真实秒） */
-export const TICK_REAL_MS = 30000;
+/** 1x 速度下，推进 1 个 tick（1 游戏日）所需的真实毫秒 */
+export const TICK_REAL_MS = 1000;
+
+/** 支持的最高速度（倍速），UI 的速度按钮不得超过此值 */
+export const MAX_SPEED = 8;
 
 /** 单帧最大步进上限，防死亡螺旋（切回前台时累积过多） */
 export const MAX_STEPS_PER_FRAME = 240;
@@ -95,7 +98,7 @@ export class Clock {
     }
 
     setSpeed(speed) {
-        this.speed = Math.max(0, Math.min(5, Math.floor(speed)));
+        this.speed = Math.max(0, Math.min(MAX_SPEED, Math.floor(speed)));
     }
 
     /** 启动 rAF 循环（注入了 raf 时才生效） */

@@ -1041,28 +1041,55 @@ const MapView = {
 
     drawArmies(ctx) {
         const game = this.game;
-        // 驻军存在性（仅呈现，无战斗结算）
+        const at = (provinceId) => {
+            const b = this.bbox.get(provinceId);
+            if (!b) return null;
+            return { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+        };
+        const ownerColor = (tag) => {
+            const owner = game.countryById(tag);
+            return owner ? this.themeFillColor(owner.color) : '#fff';
+        };
+
+        // 驻军（存在性，仅呈现）
         for (const g of game.garrisons()) {
-            const prov = game.provinceById(g.provinceId);
-            if (!prov) continue;
-            const b = this.bbox.get(g.provinceId);
-            if (!b) continue;
-            const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
-            const owner = game.countryById(g.owner);
-            const color = owner ? this.themeFillColor(owner.color) : '#fff';
+            const p = at(g.provinceId);
+            if (!p) continue;
             const size = Math.max(5, Math.min(16, 4 + g.count / 4)) / this.scale;
-            ctx.fillStyle = color;
+            ctx.fillStyle = ownerColor(g.owner);
             ctx.strokeStyle = '#000';
             ctx.lineWidth = 1.2 / this.scale;
             ctx.beginPath();
-            ctx.rect(cx - size / 2, cy - size / 2, size, size);
+            ctx.rect(p.x - size / 2, p.y - size / 2, size, size);
             ctx.fill();
             ctx.stroke();
             if (this.scale > 0.5) {
                 ctx.fillStyle = this.armyTextColor;
                 ctx.font = `bold ${9 / this.scale}px sans-serif`;
                 ctx.textAlign = 'center';
-                ctx.fillText(Math.round(g.count), cx, cy + 3 / this.scale);
+                ctx.fillText(Math.round(g.count), p.x, p.y + 3 / this.scale);
+            }
+        }
+
+        // 作战部队（可移动、可战斗）：圆形标记 + 兵力
+        if (!game.allArmies) return;
+        for (const a of game.allArmies()) {
+            if (a.strength <= 0) continue;
+            const p = at(a.provinceId);
+            if (!p) continue;
+            const size = Math.max(7, Math.min(18, 6 + a.strength / 4)) / this.scale;
+            ctx.fillStyle = ownerColor(a.owner);
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1.4 / this.scale;
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, size / 2, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+            if (this.scale > 0.5) {
+                ctx.fillStyle = this.armyTextColor;
+                ctx.font = `bold ${9 / this.scale}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.fillText(Math.round(a.strength), p.x, p.y + 3 / this.scale);
             }
         }
     },

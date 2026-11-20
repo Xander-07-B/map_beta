@@ -13,6 +13,7 @@ import {
     Clock,
     TICK_GAME_DAYS,
     TICKS_PER_MONTH,
+    MAX_SPEED,
     Campaign,
     loadScenario,
     validateScenario,
@@ -20,6 +21,10 @@ import {
     applyCommand,
     canonicalStringify,
     deepMerge,
+    settleEconomy,
+    settleWar,
+    isAdjacent,
+    countryPower,
 } from '../js/core/index.js';
 
 // ---------- 测试骨架 ----------
@@ -59,27 +64,34 @@ section('1. PRNG 确定性（xoshiro256**）');
 }
 
 // ============================================================
-section('2. 逻辑时钟（1 tick = 30 真实秒 = 2 游戏日）');
+section('2. 逻辑时钟（1 tick = 1 游戏日）');
 {
     const cl = new Clock({ startDate: '1936-01-01' });
     assertEqual(cl.date.toISOString(), '1936-01-01T00:00:00.000Z', 'tick 0 为开局日期');
     cl.tick = 1;
-    assertEqual(cl.date.toISOString(), '1936-01-03T00:00:00.000Z', '1 tick = 2 游戏日');
-    assertEqual(cl.gameDay, 2, 'gameDay = tick × 2');
-    cl.tick = TICKS_PER_MONTH;   // 15
-    assertEqual(cl.date.toISOString(), '1936-01-31T00:00:00.000Z', '15 tick = 30 游戏日');
+    assertEqual(cl.date.toISOString(), '1936-01-02T00:00:00.000Z', '1 tick = 1 游戏日');
+    assertEqual(cl.gameDay, 1, 'gameDay = tick');
+    cl.tick = TICKS_PER_MONTH;   // 30
+    assertEqual(cl.date.toISOString(), '1936-01-31T00:00:00.000Z', '30 tick = 30 游戏日');
     assertEqual(cl.isMonthStart, true, '月界判定（30 游戏日）');
 
-    // advance 用真实毫秒驱动（TICK_REAL_MS = 30000，1x 下 30 真实秒 = 1 tick）
+    // advance 用真实毫秒驱动（TICK_REAL_MS = 1000，1x 下 1 真实秒 = 1 tick）
     const cl2 = new Clock({ startDate: '1936-01-01' });
     cl2.setSpeed(1);
-    cl2.advance(30000);   // 30 真实秒 = 1 tick
-    assertEqual(cl2.tick, 1, 'advance 按 STEP（30s）折算 tick');
-    cl2.advance(60000);   // 再 2 tick
+    cl2.advance(1000);   // 1 真实秒 = 1 tick
+    assertEqual(cl2.tick, 1, 'advance 按 STEP（1s）折算 tick');
+    cl2.advance(2000);   // 再 2 tick
     assertEqual(cl2.tick, 3, 'acc 累加跨帧折算');
     cl2.setSpeed(0);
     cl2.advance(600000);
     assertEqual(cl2.tick, 3, '速度 0 时不推进');
+
+    // 倍速线性缩放
+    const cl3 = new Clock({ startDate: '1936-01-01' });
+    cl3.setSpeed(5);
+    cl3.advance(1000);
+    assertEqual(cl3.tick, 5, '5x 速度下 1 真实秒推进 5 tick');
+    assertEqual(cl3.speed, 5, '速度上限为 MAX_SPEED');
 }
 
 // ============================================================
@@ -157,7 +169,13 @@ section('5. 国策链：选择 → 推进 → 完成 → 效果');
     assertEqual(s.countries.GER.activeFocus, null, '国策完成后清空进行态');
     assert(s.focuses.GER.done.includes('reconstruction'), '国策标记完成');
     assertEqual(s.countries.GER.civs, 22, '国策效果：civs +2');
-    assertEqual(s.countries.GER.stability, 500, '国策效果：稳定度 +0.05（定点 500）');
+
+    // 稳定度：经济系统会持续向基线漂移，用对照组分离国策的 +0.05 效果
+    const ctrl = await Campaign.create('1936', { fetchJson });
+    ctrl.newGame();
+    ctrl.fastForward(35);
+    const drifted = ctrl.state.countries.GER.stability;
+    assert(s.countries.GER.stability > drifted, `国策效果：稳定度高于仅经济漂移的对照组（${s.countries.GER.stability} > ${drifted}）`);
 
     // 第二级国策（requires civs >= 5）
     assert(camp.command({ t: 'chooseFocus', country: 'GER', focusId: 'rearmament' }).ok, '前置满足后可选 rearmament');
@@ -256,9 +274,10 @@ section('9. 回放：快照 + 命令日志 → 复现');
     const snap0 = campA.save();                       // tick 0 快照
     campA.command({ t: 'declareWar', from: 'GER', to: 'POL' });
     campA.command({ t: 'assignOwner', state: 102, to: 'GER' });
+    // 回放日志只取玩家/命令层产生的记录，不含快进期间自动生成的议和等命令
+    const log = campA.state.log.slice();
     campA.fastForward(300);
     const finalState = canonicalStringify(campA.state);
-    const log = campA.state.log.slice();
 
     const campB = await Campaign.create('1936', { fetchJson });
     campB.newGame();
@@ -266,6 +285,117 @@ section('9. 回放：快照 + 命令日志 → 复现');
     assert(rr.ok, '回放全部命令成功');
     campB.fastForward(300);   // 回放后推进相同 tick，验证时间轴复现
     assertDeep(campB.state, JSON.parse(finalState), '回放复现最终状态');
+}
+
+// ============================================================
+section('10. 经济结算（资源 / 生产线 / 建造 / 科研 / 人力）');
+{
+    const camp = await Campaign.create('1936', { fetchJson });
+    camp.newGame();
+    const s = camp.state;
+    const ger = s.countries.GER;
+
+    const steel0 = ger.resources.steel || 0;
+    const mp0 = ger.manpower;
+
+    assert(camp.command({ t: 'allocateFactory', country: 'GER', line: { equipment: 'infantry_weapon', factories: 1 } }).ok, '分配生产线');
+    assert(camp.command({ t: 'startConstruction', country: 'GER', kind: 'civs', state: 101 }).ok, '开始建造民用工厂');
+    assert(camp.command({ t: 'startResearch', country: 'GER', techId: 'inf_weapons_1' }).ok, '开始科研');
+
+    camp.fastForward(130);   // 130 游戏日
+
+    assert((ger.resources.steel || 0) > steel0, '资源随时间增长');
+    assert((ger.equipment.infantry_weapon || 0) > 0, '生产线产出装备');
+    assertEqual(ger.civs, 21, '建造完成：民用工厂 +1');
+    assertEqual(ger.tech.inf_weapons_1, true, '科研完成并记录');
+    assert(ger.manpower > mp0, '人力随时间增长');
+    assert(ger.politicalPower <= 200, '政治点数不超过上限');
+    assertEqual(s.research.GER.researching.length, 0, '科研完成后释放研究槽');
+    assert(s.history.some((h) => h.text.includes('完成建造')), '建造写入历史播报');
+    assert(s.history.some((h) => h.text.includes('完成科技')), '科研写入历史播报');
+}
+
+// ============================================================
+section('11. 军事闭环（部署 → 移动 → 战斗 → 占领）');
+{
+    const camp = await Campaign.create('1936', { fetchJson });
+    camp.newGame();
+    const s = camp.state;
+    // 渲染层注入真实邻接表；测试用剧本省份构造最小邻接
+    camp.setMapIndex({
+        neighbors: {
+            '1159312769': [1159314695],
+            '1159314695': [1159312769, 1159314679],
+            '1159314679': [1159314695],
+        },
+    });
+
+    assert(isAdjacent(camp.ctx(), 1159312769, 1159314695), '邻接判定：柏林 → 波兰省份');
+    assert(!isAdjacent(camp.ctx(), 1159312769, 1159316799), '邻接判定：不相邻省份被拒');
+
+    assert(camp.command({ t: 'declareWar', from: 'GER', to: 'POL' }).ok, '宣战');
+
+    // 部署：扣人力与装备
+    assert(camp.command({ t: 'deployArmy', country: 'GER', province: 1159312769, template: 'infantry', count: 2 }).ok, '部署两支步兵师');
+    assertEqual(s.armies.length, 2, '两支部队就绪');
+    assertEqual(s.countries.GER.manpower, 68000000 - 16, '部署扣除人力');
+    assertEqual(s.countries.GER.equipment.infantry_weapon, 40 - 12, '部署扣除装备');
+
+    // 移动到无敌军的相邻省份 → 直接占领
+    const army = s.armies[0];
+    assert(camp.command({ t: 'moveArmy', armyId: army.id, to: 1159314695 }).ok, '部队移动到相邻省份');
+    assertEqual(s.provinces[1159314695].controller, 'GER', '移动后占领该省份');
+
+    // 波兰部队进入同一省份 → 触发战斗
+    assert(camp.command({ t: 'deployArmy', country: 'POL', province: 1159314679, template: 'infantry', count: 1 }).ok, '波兰部署部队');
+    const polArmy = s.armies.find((a) => a.owner === 'POL');
+    assert(polArmy, '波兰部队已就绪');
+    assert(camp.command({ t: 'moveArmy', armyId: polArmy.id, to: 1159314695 }).ok, '波兰部队进入交战省份');
+
+    camp.fastForward(15);
+
+    assert(s.history.some((h) => h.text.includes('爆发战斗')), '同省多国部队触发战斗');
+    assert(s.armies.some((a) => a.strength < 15), '战斗造成兵力损耗');
+    assert(s.wars[0].scoreA > 0 || s.wars[0].scoreB > 0, '战斗计入战争分数');
+
+    // 解散部队
+    const remain = s.armies[0];
+    assert(camp.command({ t: 'disbandArmy', armyId: remain.id }).ok, '解散部队');
+    assertEqual(s.armies.some((a) => a.id === remain.id), false, '解散后部队移除');
+}
+
+// ============================================================
+section('12. AI 决策与确定性（AI-only 压测 600 天）');
+{
+    const neighbors = {
+        '1159312769': [1159314695],
+        '1159314695': [1159312769, 1159316799],
+        '1159316799': [1159314695],
+    };
+    const run = async () => {
+        const camp = await Campaign.create('1936', { fetchJson });
+        camp.newGame();
+        camp.setMapIndex({ neighbors });
+        camp.state.players = {};      // 全部国家由 AI 接管
+        camp.setAI(true);
+        camp.fastForward(600);        // 600 游戏日
+        return camp;
+    };
+    const [a, b] = await Promise.all([run(), run()]);
+
+    assertDeep(a.state, b.state, 'AI 两轮独立运行状态逐位一致');
+    assert(a.state.log.length > 0, 'AI 产生了命令');
+    assert(a.state.history.some((h) => h.text.includes('完成建造')), 'AI 会自主建造');
+    assert(a.state.countries.GER.tech && Object.keys(a.state.countries.GER.tech).length > 0, 'AI 会自主科研');
+    assert(a.state.wars.length > 0, 'AI 会主动宣战');
+
+    // 压测：数值不出现异常
+    for (const c of Object.values(a.state.countries)) {
+        assert(Number.isFinite(c.manpower) && c.manpower >= 0, `${c.tag} 人力为有限非负数`);
+        assert(Number.isFinite(c.politicalPower), `${c.tag} 政治点数有限`);
+        assert(c.resources.steel === undefined || Number.isFinite(c.resources.steel), `${c.tag} 资源数值有限`);
+    }
+    assertEqual(a.state.armies.length, b.state.armies.length, 'AI 部队数量可复现');
 }
 
 // ============================================================

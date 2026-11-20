@@ -14,11 +14,13 @@ const DEFAULT_COUNTRY = {
     leader: '',
     capital: null,
     manpower: 0,
+    population: 0,
     politicalPower: 0,
     stability: toFP(0.5),
     warSupport: toFP(0.5),
     legitimacy: toFP(0.5),
     resources: {},
+    equipment: {},              // 装备库存：equipmentId -> 数量
     civs: 0,
     mils: 0,
     docks: 0,
@@ -35,6 +37,11 @@ const DEFAULT_COUNTRY = {
     construction: [],
     production: [],
     researchProgress: {},
+    tech: {},                   // 已完成科技：techId -> true
+    bonuses: { division: {}, factory: {}, resource: {}, misc: {} },
+    unlockedTemplates: [],
+    unlockedEquipment: [],
+    warScore: 0,
 };
 
 function createCountry(tag, def) {
@@ -45,16 +52,27 @@ function createCountry(tag, def) {
     c.legitimacy = toFP(c.legitimacy);
     // 可变子对象重置为独立副本，避免引用共享
     c.resources = { ...(def.resources || {}) };
+    c.equipment = { ...(def.equipment || {}) };
     c.buildings = { ...(def.buildings || {}) };
     c.occupied = { ...(def.occupied || {}) };
     c.relations = { ...(def.relations || {}) };
     c.garrison = { ...(def.garrison || {}) };
     c.flags = { ...(def.flags || {}) };
     c.research = { ...(def.research || {}) };
+    c.tech = { ...(def.tech || {}) };
+    c.bonuses = {
+        division: { ...(def.bonuses?.division || {}) },
+        factory: { ...(def.bonuses?.factory || {}) },
+        resource: { ...(def.bonuses?.resource || {}) },
+        misc: { ...(def.bonuses?.misc || {}) },
+    };
+    c.unlockedTemplates = [...(def.unlockedTemplates || [])];
+    c.unlockedEquipment = [...(def.unlockedEquipment || [])];
     c.researchProgress = {};
     c.construction = [];
     c.production = [];
     c.activeFocus = null;
+    c.warScore = def.warScore ?? 0;
     return c;
 }
 
@@ -80,6 +98,7 @@ export function createWorldState({ scenario, seed = 0x1936, rng }) {
         provinces: {},
         states: {},
         wars: [],
+        armies: [],          // 军队实体：{ id, owner, provinceId, template, strength, org, speed }
         alliances: [],
         events: {
             enabled: [...(scenario.events?.enabled || [])],
@@ -95,6 +114,7 @@ export function createWorldState({ scenario, seed = 0x1936, rng }) {
         pending: [],        // 规则级联待处理队列
         victory: null,      // { winner, tick, conditions }
         nextWarId: 1,
+        nextArmyId: 1,
         nextCmdSeq: 1,
     };
 
@@ -150,6 +170,8 @@ export function createWorldState({ scenario, seed = 0x1936, rng }) {
             startedAt: w.startedAt ?? 0,
             justification: w.justification || '',
             warScore: 0,
+            scoreA: 0,
+            scoreB: 0,
             status: 'active',
         });
         markAtWar(s, w.a, w.b);

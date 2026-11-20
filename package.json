@@ -5,7 +5,11 @@
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "test": "node scripts/test-campaign-core.mjs"
+    "test": "node scripts/test-campaign-core.mjs && node scripts/test-integration.mjs && node scripts/test-ui-smoke.mjs",
+    "test:core": "node scripts/test-campaign-core.mjs",
+    "test:integration": "node scripts/test-integration.mjs",
+    "test:ui": "node scripts/test-ui-smoke.mjs",
+    "build:map": "node scripts/build-provinces.mjs && node scripts/build-index.mjs"
   },
   "repository": {
     "type": "git",

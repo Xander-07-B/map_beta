@@ -66,12 +66,15 @@ const Game = {
     /** 地图数据加载完成后注入省份元数据（名称/邻接/bbox） */
     loadProvinceData(index) {
         this._mapIndex = index;
+        // 邻接表是部队移动判定的依据，必须同步给模拟层
+        if (this.campaign) this.campaign.setMapIndex(index);
     },
 
     // ===================== 模拟层访问 =====================
 
     get state() { return this.campaign ? this.campaign.state : null; },
     get clock() { return this.campaign ? this.campaign.clock : null; },
+    get index() { return this._mapIndex; },   // 地图索引（邻接表 / 省份元数据）
 
     get speed() { return this.campaign ? this.campaign.clock.speed : 0; },
     set speed(v) { if (this.campaign) this.campaign.clock.setSpeed(v); },
@@ -173,6 +176,47 @@ const Game = {
             }
         }
         return out;
+    },
+
+    // ===================== 内容访问（装备 / 科技 / 部队模板） =====================
+
+    get equipment() { return this.campaign?.content?.equipment || {}; },
+    get techs() { return this.campaign?.content?.techs || {}; },
+    get divisions() { return this.campaign?.content?.divisions || {}; },
+
+    /** 该国已解锁、可部署的部队模板 id 列表 */
+    availableTemplates(tag) {
+        const c = this.countryById(tag);
+        if (!c) return [];
+        return (c.unlockedTemplates || []).filter((id) => this.divisions[id]);
+    },
+
+    /** AI 接管开关（AI-only 模式 / 压测） */
+    get aiEnabled() { return !!this.campaign?.aiEnabled; },
+    setAI(enabled) { return this.campaign ? this.campaign.setAI(enabled) : false; },
+
+    /** 最近一次经济 / 军事结算结果（供面板展示） */
+    get lastEconomy() { return this.campaign?.lastEconomy || null; },
+    get lastWar() { return this.campaign?.lastWar || null; },
+
+    // ===================== 军队 =====================
+
+    armyById(id) { return this.state?.armies?.find((a) => a.id === id) || null; },
+    armiesOf(tag) { return (this.state?.armies || []).filter((a) => a.owner === tag); },
+    armiesIn(provinceId) { return (this.state?.armies || []).filter((a) => a.provinceId === provinceId); },
+    allArmies() { return this.state?.armies || []; },
+
+    /** 目标省份是否与某省相邻（部队移动前的按钮禁用态，与命令校验同源） */
+    isAdjacent(fromId, toId) {
+        if (!this.campaign) return false;
+        return window.Core.isAdjacent(this.campaign.ctx(), fromId, toId);
+    },
+
+    /** 部队模板的人力与装备消耗（面板展示用） */
+    divisionCost(templateId) {
+        const tpl = this.divisions[templateId];
+        if (!tpl) return null;
+        return { manpower: tpl.cost.manpower, equipment: tpl.cost.equipment || {} };
     },
 
     // ===================== 国策 / 决议可用性（UI 用，与 validate 同源） =====================

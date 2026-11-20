@@ -14,9 +14,28 @@ const App = {
     init() {
         this.initTheme();
         this.bindStartScreen();
+        this.bindAIToggle();
         if (Game.hasSave()) {
             document.getElementById('btnContinue').disabled = false;
         }
+    },
+
+    // ===================== AI 接管 =====================
+
+    bindAIToggle() {
+        const btn = document.getElementById('btnAI');
+        if (!btn) return;
+        const sync = () => {
+            const on = !!Game.aiEnabled;
+            btn.classList.toggle('active', on);
+            btn.title = on ? 'AI 已接管所有非玩家国家（点击关闭）'
+                           : '切换 AI 接管：所有非玩家国家由 AI 决策';
+        };
+        btn.addEventListener('click', () => {
+            Game.setAI(!Game.aiEnabled);
+            sync();
+        });
+        sync();
     },
 
     // ===================== 主题 =====================
@@ -134,8 +153,20 @@ const App = {
             loader.classList.add('hidden');
 
             // 启动战役时钟（模拟层自驱 rAF 循环）
+            // 开局默认暂停：先看清局面再手动选速度推进，符合大战略品类的惯例
             Game.clock.start();
-            Game.speed = 1;
+            Game.speed = 0;
+
+            // AI-only 模式：?ai=1 让所有非玩家国家由 AI 接管，并以高速推进（观战 / 压测）
+            if (this.aiOnlyMode()) {
+                Game.setAI(true);
+                const aiBtn = document.getElementById('btnAI');
+                if (aiBtn) {
+                    aiBtn.classList.add('active');
+                    aiBtn.title = 'AI 已接管所有非玩家国家（点击关闭）';
+                }
+                Game.speed = 5;
+            }
 
             // 初始化 UI
             UI.init(Game);
@@ -176,6 +207,12 @@ const App = {
         document.getElementById('startScreen').classList.add('active');
         document.getElementById('countrySelect').classList.add('hidden');
         if (Game.hasSave()) document.getElementById('btnContinue').disabled = false;
+    },
+
+    // AI-only 模式：URL 带 ?ai=1 时所有非玩家国家由 AI 接管
+    aiOnlyMode() {
+        try { return new URLSearchParams(location.search).get('ai') === '1'; }
+        catch { return false; }
     },
 
     // 全局 resize 处理

@@ -159,6 +159,76 @@ section('6. 存档 / 读档（经 Game 门面 + localStorage）');
 }
 
 // ============================================================
+section('7. 经济与军事闭环（经 Game 门面）');
+{
+    // 邻接表：真实环境由 MapView.loadData 注入，这里手动注入
+    Game.campaign.setMapIndex({
+        neighbors: { '1159312769': [1159314695], '1159314695': [1159312769] },
+    });
+
+    const steel0 = Game.countryById('GER').resources.steel;
+
+    // 经济：产线 / 建造 / 科研
+    assert(Game.command({ t: 'allocateFactory', country: 'GER', line: { equipment: 'infantry_weapon', factories: 1 } }).ok, '经门面分配生产线');
+    assert(Game.command({ t: 'startConstruction', country: 'GER', kind: 'civs', state: 101 }).ok, '经门面开始建造');
+    assert(Game.command({ t: 'startResearch', country: 'GER', techId: 'inf_weapons_1' }).ok, '经门面开始科研');
+
+    Game.campaign.fastForward(130);
+
+    assert(Game.countryById('GER').resources.steel > steel0, '经济结算：资源随时间增长');
+    assert(Game.countryById('GER').equipment.infantry_weapon > 0, '经济结算：生产线产出装备');
+    assertEqual(Game.countryById('GER').civs, 21, '经济结算：建造完成 +1 民用工厂');
+    assertEqual(Game.countryById('GER').tech.inf_weapons_1, true, '经济结算：科研完成');
+    assert(Game.lastEconomy !== null, '门面暴露最近一次经济结算');
+
+    // 军事：部署 → 移动 → 占领
+    assert(Game.command({ t: 'deployArmy', country: 'GER', province: 1159312769, template: 'infantry', count: 1 }).ok, '经门面部署部队');
+    assertEqual(Game.allArmies().length, 1, '部队已创建');
+    const army = Game.allArmies()[0];
+    assert(Game.command({ t: 'moveArmy', armyId: army.id, to: 1159314695 }).ok, '经门面移动部队');
+    assertEqual(Game.ownerOf(1159314695), 'GER', '移动后占领该省份');
+
+    // 生产队列：追加 / 调整 / 取消（全部走命令管道）
+    assertEqual(Game.countryById('GER').production.length, 1, '产线为追加而非覆盖');
+    assert(Game.command({ t: 'adjustProduction', country: 'GER', index: 0, factories: 2 }).ok, '调整产线工厂数');
+    assertEqual(Game.countryById('GER').production[0].factories, 2, '产线工厂数已更新');
+    assert(Game.command({ t: 'cancelProduction', country: 'GER', index: 0 }).ok, '取消产线');
+    assertEqual(Game.countryById('GER').production.length, 0, '产线已移除');
+
+    // 按钮禁用态与命令校验同源
+    const badDeploy = Game.canCommand({ t: 'deployArmy', country: 'GER', province: 1159312769, template: 'armor', count: 1 });
+    assert(!badDeploy.ok, '未解锁的部队模板 → 禁用');
+    const badMove = Game.canCommand({ t: 'moveArmy', armyId: army.id, to: 1159316799 });
+    assert(!badMove.ok, '移动到不相邻省份 → 禁用');
+    const goodDeploy = Game.canCommand({ t: 'deployArmy', country: 'GER', province: 1159312769, template: 'infantry', count: 1 });
+    assertEqual(goodDeploy, null, '合法部署命令 → 可执行');
+}
+
+// ============================================================
+section('8. AI 接管与存档（含新增状态）');
+{
+    // AI 接管：所有国家交由 AI 决策
+    Game.campaign.state.players = {};
+    Game.setAI(true);
+    assertEqual(Game.aiEnabled, true, 'AI 已开启');
+    Game.campaign.fastForward(60);
+    assert(Game.state.log.length > 0, 'AI 产生了命令');
+    assert(Game.state.history.length > 0, 'AI 产生了历史记录');
+    Game.setAI(false);
+    assertEqual(Game.aiEnabled, false, 'AI 已关闭');
+
+    // 存档需包含新增的军队 / 装备状态
+    assert(Game.save(), '存档成功');
+    const raw = JSON.parse(sandbox.localStorage.getItem('hoi4_campaign_save'));
+    assert(Array.isArray(raw.snapshot.armies), '存档包含军队状态');
+    assert(raw.snapshot.countries.GER.equipment !== undefined, '存档包含装备库存');
+    assert(raw.snapshot.countries.GER.bonuses !== undefined, '存档包含科技加成');
+
+    assert(Game.load(), '读档成功');
+    assertEqual(Game.allArmies().length, raw.snapshot.armies.length, '读档恢复部队数量');
+}
+
+// ============================================================
 console.log(`\n${'='.repeat(56)}`);
 console.log(`通过 ${passed} 项，失败 ${failures.length} 项`);
 if (failures.length) {
