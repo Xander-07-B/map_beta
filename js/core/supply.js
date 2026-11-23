@@ -35,3 +35,28 @@ export function supplyFactorFor(s, ctx, provinceId) {
     }
     return supplyFactorOf(s?.provinces?.[provinceId]);
 }
+
+// ===================== 控制方索引（派生缓存） =====================
+
+/**
+ * 控制方 → 省份 id 列表。
+ * 补给网络、战争分数等每 tick 都要按控制方统计省份；全表扫描数千省份太浪费。
+ * 控制权只经命令管道变更（命令会递增 s.controllerVersion），版本变化时重建。
+ * WeakMap 以状态对象为键：读档 / 回放产生新对象时自动失效。
+ */
+const _controllerIndex = new WeakMap();
+
+export function controllerIndex(s) {
+    const version = s.controllerVersion || 0;
+    const cached = _controllerIndex.get(s);
+    if (cached && cached.version === version) return cached.byOwner;
+    const byOwner = new Map();
+    for (const p of Object.values(s.provinces || {})) {
+        if (!p.controller) continue;
+        let arr = byOwner.get(p.controller);
+        if (!arr) { arr = []; byOwner.set(p.controller, arr); }
+        arr.push(p.id);
+    }
+    _controllerIndex.set(s, { version, byOwner });
+    return byOwner;
+}

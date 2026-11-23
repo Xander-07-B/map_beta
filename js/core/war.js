@@ -12,7 +12,7 @@ import { applyCommand } from './commands.js';
 import { recomputeVictoryPoints, clearAtWar } from './state.js';
 import { divisionBonus, dateOf } from './economy.js';
 import { airPowerByOwner, airSupportModifiers } from './airnavy.js';
-import { clamp01, supplyFactorFor } from './supply.js';
+import { clamp01, supplyFactorFor, controllerIndex } from './supply.js';
 
 /** 战争分数达到该值即自动议和 */
 export const PEACE_SCORE = 100;
@@ -177,16 +177,18 @@ export function applyOccupation(s, ctx, provinceId, province) {
  */
 export function checkStateOwnership(s, ctx) {
     for (const st of Object.values(s.states)) {
-        if (st.provinces.length === 0) continue;
-        const controllers = new Set();
-        for (const pid of st.provinces) {
-            const p = s.provinces[pid];
-            if (!p) continue;
-            if (p.controller) controllers.add(p.controller);
-            if (controllers.size > 1) break;
+        const provs = st.provinces;
+        if (provs.length === 0) continue;
+        // 不分配 Set：只记录第一个控制方，出现不同控制方即视为争夺中
+        let only = null;
+        let mixed = false;
+        for (let i = 0; i < provs.length; i++) {
+            const p = s.provinces[provs[i]];
+            if (!p || !p.controller) continue;
+            if (only === null) only = p.controller;
+            else if (only !== p.controller) { mixed = true; break; }
         }
-        if (controllers.size !== 1) continue;
-        const only = [...controllers][0];
+        if (mixed || only === null) continue;
         if (st.owner === only) continue;
         s.pending.push({ kind: 'ownerChanged', payload: { state: st.id, to: only, reason: '军事占领' } });
     }
@@ -227,11 +229,7 @@ export function settleWarScore(s, ctx) {
 }
 
 function controlledCount(s, tag) {
-    let n = 0;
-    for (const p of Object.values(s.provinces)) {
-        if (p.controller === tag) n++;
-    }
-    return n;
+    return (controllerIndex(s).get(tag) || []).length;
 }
 
 /**

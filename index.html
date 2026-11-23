@@ -168,7 +168,7 @@
                 <div id="minimapContainer"></div>
                 <!-- 选中省份速览（查看驻军 / 快捷部署） -->
                 <div id="provinceCard" class="province-card hidden"></div>
-                <div class="map-hint">拖动平移 · 滚轮缩放 · 点省份查看 · 点部队后点相邻省份移动</div>
+                <div class="map-hint">拖动平移 · 滚轮 / 双指缩放 · 双击放大 · 点省份查看 · 点部队后点相邻省份移动</div>
             </div>
         </div>
 
@@ -240,11 +240,11 @@
     <!-- 脚本 -->
     <script src="vendor/d3.min.js"></script>
     <script src="vendor/topojson-client.min.js"></script>
-    <script src="js/data.js"></script>
-    <script src="js/map.js"></script>
-    <script src="js/game.js"></script>
-    <script src="js/ui.js"></script>
-    <script src="js/main.js"></script>
+    <script src="js/render/data.js"></script>
+    <script src="js/render/map.js"></script>
+    <script src="js/render/game.js"></script>
+    <script src="js/render/ui.js"></script>
+    <script src="js/render/main.js"></script>
     <!-- 战役核心（ES 模块，挂载 window.Core，供后续集成取用） -->
     <script type="module" src="js/core/index.js"></script>
 </body>

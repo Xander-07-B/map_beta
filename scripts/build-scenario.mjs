@@ -101,7 +101,8 @@ function hashColor(tag) {
     return `hsl(${h % 360}, 32%, 42%)`;
 }
 
-const metaById = new Map(Object.values(index.meta).map((m) => [m.id, m]));
+// index.meta 以省份 id 为键（值里不再重复存 id）
+const metaById = new Map(Object.entries(index.meta).map(([id, m]) => [Number(id), m]));
 const manualProvinces = new Map((template.provinces || []).map((p) => [p.id, p]));
 const manualOwners = new Map(Object.entries(template.owners || {}).map(([id, tag]) => [Number(id), tag]));
 
@@ -110,8 +111,8 @@ const provinces = [];
 const owners = {};
 const ownedBy = new Map(); // tag -> 省份 id[]
 
-for (const m of Object.values(index.meta).sort((a, b) => a.id - b.id)) {
-    const id = m.id;
+for (const [idStr, m] of Object.entries(index.meta).sort((a, b) => Number(a[0]) - Number(b[0]))) {
+    const id = Number(idStr);
     const manual = manualProvinces.get(id);
     const p = manual
         ? { ...manual, coastal: manual.coastal ?? !!m.coastal }

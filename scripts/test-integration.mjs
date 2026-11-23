@@ -47,8 +47,8 @@ sandbox.globalThis = sandbox;
 
 const ctx = vm.createContext(sandbox);
 // 加载经典脚本（data.js 定义常量，game.js 定义门面）
-vm.runInContext(readFileSync('js/data.js', 'utf8'), ctx, { filename: 'data.js' });
-vm.runInContext(readFileSync('js/game.js', 'utf8'), ctx, { filename: 'game.js' });
+vm.runInContext(readFileSync('js/render/data.js', 'utf8'), ctx, { filename: 'data.js' });
+vm.runInContext(readFileSync('js/render/game.js', 'utf8'), ctx, { filename: 'game.js' });
 const Game = sandbox.Game;
 
 // ============================================================

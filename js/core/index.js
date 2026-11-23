@@ -21,7 +21,7 @@ export * from '../content/schema.js';
 export * from '../content/loader.js';
 export * from '../content/conditions.js';
 export * from '../content/l10n.js';
-export * from '../campaign.js';
+export * from './campaign.js';
 
 import * as rng from './rng.js';
 import * as clock from './clock.js';
@@ -40,7 +40,7 @@ import * as schema from '../content/schema.js';
 import * as loader from '../content/loader.js';
 import * as conditions from '../content/conditions.js';
 import * as l10n from '../content/l10n.js';
-import * as campaign from '../campaign.js';
+import * as campaign from './campaign.js';
 
 if (typeof window !== 'undefined') {
     window.Core = {

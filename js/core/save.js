@@ -39,56 +39,70 @@ function migrateV1ToV2(data) {
 /** v2 → v3：快照内的军队缺少 experience 字段，meta 缺 tick/date */
 function migrateV3FromV2(data) {
     const out = { ...data, meta: { ...(data.meta || {}), version: 3 } };
-    const snap = out.snapshot || (out.snapshot = {});
-    if (Array.isArray(snap.armies)) {
-        snap.armies = snap.armies.map((a) => (a && typeof a === 'object' ? { experience: 0, ...a } : a));
-    } else {
-        snap.armies = [];
-    }
+    const snap = out.snapshot || {};
+    const armies = Array.isArray(snap.armies)
+        ? snap.armies.map((a) => (a && typeof a === 'object' ? { experience: 0, ...a } : a))
+        : [];
+    // 浅拷贝快照后再写回，避免修改调用方传入的对象
+    out.snapshot = { ...snap, armies };
     if (out.meta.tick === undefined) out.meta.tick = snap.tick || 0;
     if (!out.meta.seed && snap.seed !== undefined) out.meta.seed = snap.seed;
     return out;
 }
 
+/** 地形加成字段的默认值辅助 */
+function terrainBonusOf(c) {
+    const b = c.bonuses && typeof c.bonuses === 'object' ? c.bonuses : { division: {}, factory: {}, resource: {}, misc: {} };
+    return {
+        ...b,
+        terrain: b.terrain && typeof b.terrain === 'object' ? b.terrain : {},
+    };
+}
+
 /** v3 → v4：引入空军 / 海军 / 阵营 / 租借 / 和平提议 / 部队指令等字段 */
 function migrateV4FromV3(data) {
     const out = { ...data, meta: { ...(data.meta || {}), version: 4 } };
-    const snap = out.snapshot || (out.snapshot = {});
+    const prev = out.snapshot || {};
 
-    snap.airForces = Array.isArray(snap.airForces) ? snap.airForces : [];
-    snap.fleets = Array.isArray(snap.fleets) ? snap.fleets : [];
-    snap.factionInvites = Array.isArray(snap.factionInvites) ? snap.factionInvites : [];
-    snap.peaceOffers = Array.isArray(snap.peaceOffers) ? snap.peaceOffers : [];
-    snap.lendLease = snap.lendLease && typeof snap.lendLease === 'object' ? snap.lendLease : {};
+    const snap = {
+        ...prev,
+        airForces: Array.isArray(prev.airForces) ? prev.airForces : [],
+        fleets: Array.isArray(prev.fleets) ? prev.fleets : [],
+        factionInvites: Array.isArray(prev.factionInvites) ? prev.factionInvites : [],
+        peaceOffers: Array.isArray(prev.peaceOffers) ? prev.peaceOffers : [],
+        lendLease: prev.lendLease && typeof prev.lendLease === 'object' ? prev.lendLease : {},
+    };
 
-    if (Array.isArray(snap.armies)) {
-        snap.armies = snap.armies.map((a) => (a && typeof a === 'object' ? { order: 'hold', ...a } : a));
-    }
-    if (Array.isArray(snap.alliances)) {
-        snap.alliances = snap.alliances.map((f) => {
+    snap.armies = Array.isArray(prev.armies)
+        ? prev.armies.map((a) => (a && typeof a === 'object' ? { order: 'hold', ...a } : a))
+        : [];
+    snap.alliances = Array.isArray(prev.alliances)
+        ? prev.alliances.map((f) => {
             if (!f || typeof f !== 'object') return f;
             const members = Array.isArray(f.members) ? f.members : [];
             return {
                 invites: [],
                 leader: f.leader ?? members[0] ?? null,
                 ...f,
-                members,
+                members: [...members],
             };
-        });
-    } else {
-        snap.alliances = [];
-    }
-    if (snap.countries && typeof snap.countries === 'object') {
-        for (const c of Object.values(snap.countries)) {
-            if (!c || typeof c !== 'object') continue;
-            if (!Array.isArray(c.unlockedAir)) c.unlockedAir = [];
-            if (!Array.isArray(c.unlockedShips)) c.unlockedShips = [];
-            if (!c.bonuses || typeof c.bonuses !== 'object') c.bonuses = { division: {}, factory: {}, resource: {}, misc: {} };
-            if (!c.bonuses.terrain || typeof c.bonuses.terrain !== 'object') c.bonuses.terrain = {};
+        })
+        : [];
+    if (prev.countries && typeof prev.countries === 'object') {
+        const countries = {};
+        for (const [tag, c] of Object.entries(prev.countries)) {
+            if (!c || typeof c !== 'object') { countries[tag] = c; continue; }
+            countries[tag] = {
+                ...c,
+                unlockedAir: Array.isArray(c.unlockedAir) ? c.unlockedAir : [],
+                unlockedShips: Array.isArray(c.unlockedShips) ? c.unlockedShips : [],
+                bonuses: terrainBonusOf(c),
+            };
         }
+        snap.countries = countries;
     }
-    if (Array.isArray(snap.wars)) {
-        snap.wars = snap.wars.map((w) => {
+    snap.wars = Array.isArray(prev.wars)
+        ? prev.wars.map((w) => {
             if (!w || typeof w !== 'object') return w;
             return {
                 goals: [],
@@ -96,14 +110,13 @@ function migrateV4FromV3(data) {
                 alliesB: [w.b],
                 ...w,
             };
-        });
-    } else {
-        snap.wars = [];
-    }
+        })
+        : [];
 
-    for (const key of ['nextAirId', 'nextFleetId', 'nextInviteId', 'nextOfferId']) {
+    for (const key of ['nextAirId', 'nextFleetId', 'nextInviteId', 'nextOfferId', 'controllerVersion']) {
         if (!Number.isFinite(snap[key])) snap[key] = 1;
     }
+    out.snapshot = snap;
     return out;
 }
 

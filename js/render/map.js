@@ -19,8 +19,14 @@ const MapView = {
     // scale < LOD_COUNTRY：只显示国家（全图/概览）
     // LOD_COUNTRY <= scale < LOD_PROV_COARSE：省份粗档
     // scale >= LOD_PROV_COARSE：省份精档
-    LOD_COUNTRY: 2.0,
-    LOD_PROV_COARSE: 4.8,
+    //
+    // 阈值按「全图适配缩放」的倍数计算，而不是写死绝对值：
+    // 手机屏幕小、fitScale 只有桌面的 1/3，若用 2.0/4.8 这样的绝对值，
+    // 移动端要双指放大几十倍才看得到省份，缩放手感极差。
+    // 倍数取自桌面 1920×1080 下调好的 2.0 / 4.8（fitScale≈0.44），
+    // 保证桌面手感不变，小屏幕上按同一相对进度切换。
+    get LOD_COUNTRY() { return this.fitScale * 4.5; },
+    get LOD_PROV_COARSE() { return this.fitScale * 10.9; },
     // 国家层级底图缓存向四周多渲染的比例：平移到 20% 视口内、
     // 缩小到 1.4 倍以内都能直接复用旧图，不必每帧重绘整屏
     COUNTRY_BASE_PAD: 0.2,
@@ -31,8 +37,8 @@ const MapView = {
     // === 图层 ===
     // layers.country / provL0 / provL1 各含 { paths, bbox }
     layers: { country: null, provL0: null, provL1: null },
-    paths: null,          // Map<ne_id, Path2D>  指向 provL1（拾取/军队/高亮用）
-    bbox: null,           // Map<ne_id, [x0,y0,x1,y1]>  指向 provL1
+    paths: null,          // Map<ne_id, Path2D>  拾取/军队/高亮；精档到达前指向 provL0
+    bbox: null,           // Map<ne_id, [x0,y0,x1,y1]>  同上
     seqIndex: null,       // Map<ne_id, number>  顺序索引（拾取用）
     lineTiles: null,         // 线要素网格：国界/省界/海岸线按 512px 网格合并，只描边视口内的格子
     landBasePath: null,      // 合并陆地底色（仅国家级 LOD 兜底）
@@ -149,6 +155,8 @@ const MapView = {
         this._countryBaseMode = '';
         this._renderCullView = null;
         if (this._countryBaseTimer) { clearTimeout(this._countryBaseTimer); this._countryBaseTimer = 0; }
+        if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = 0; }
+        this._lastTapTime = 0;
         this._countryBaseForce = false;
         this._fillColorCache.clear();
         this.bindEvents();
@@ -156,71 +164,95 @@ const MapView = {
     },
 
     /* ===================== 数据加载 ===================== */
+    /**
+     * 首屏只加载「国家层 + 省份粗档 + 索引」：
+     * 初始视野是国家层级，精档省界（约 3 MB、4,594 个 Path2D）此时看不见，
+     * 没必要阻塞开局。精档在首帧之后后台加载，完成后再无缝换入。
+     * 开局需要下载的数据从约 6.6 MB 降到约 1.9 MB。
+     */
     async loadData() {
-        const [provL0Res, provL1Res, cntRes, idxRes] = await Promise.all([
+        const [provL0Res, cntRes, idxRes] = await Promise.all([
             fetch('data/provinces.l0.topo.json').then(r => r.json()),
-            fetch('data/provinces.l1.topo.json').then(r => r.json()),
             fetch('data/countries.l1.topo.json').then(r => r.json()),
             fetch('data/index.json').then(r => r.json()),
         ]);
         this.topoL0 = provL0Res;
-        this.topo = provL1Res;          // 精档，用于拾取与前线
         this.countriesTopo = cntRes;
         this.index = idxRes;
-        this.buildLayers();
+        this.buildBaseLayers();
+        // 精档到达前，用粗档做拾取与部队定位，保证首帧即可操作
+        this.paths = this.layers.provL0.paths;
+        this.bbox = this.layers.provL0.bbox;
         this.buildPicker();
-        this.buildLineTiles();
-        this.buildBorderIndex();
+        this.buildLineTiles(false);
+        this.buildBorderIndex(this.topoL0);
         this.ready = true;
         // 把省份元数据交给游戏逻辑
         if (this.game) this.game.loadProvinceData(this.index);
         this.fitWorld();
-        // 首次绘制由调用方在 Game.newGame 之后触发（此时省份归属才就绪）
+        // 首帧绘制完成后（setTimeout 排在调用方的 .then 之后）再加载精档
+        setTimeout(() => this.loadPreciseLayer(), 0);
     },
 
+    // 后台加载省份精档，完成后替换拾取层、省界与前线索引
+    async loadPreciseLayer() {
+        try {
+            const res = await fetch('data/provinces.l1.topo.json');
+            const topo = await res.json();
+            this.topo = topo;
+            this.buildPreciseLayer();
+            this.buildPicker();
+            this.buildLineTiles(true);
+            this.buildBorderIndex(topo);
+            // 精档替换后旧的填充缓存与底图缓存都不能再用
+            this._fillCaches = {};
+            this._countryBaseKey = '';
+            this.requestDraw();
+        } catch (err) {
+            console.warn('省份精档加载失败，继续使用粗档', err);
+        }
+    },
+
+    topoObjName(topo) {
+        if (!topo) return null;
+        return Object.keys(topo.objects).find(k => topo.objects[k].type === 'GeometryCollection');
+    },
     provinceObjName() {
-        return Object.keys(this.topo.objects).find(k => this.topo.objects[k].type === 'GeometryCollection');
+        return this.topoObjName(this.topo || this.topoL0);
     },
     countryObjName() {
-        return Object.keys(this.countriesTopo.objects).find(k => this.countriesTopo.objects[k].type === 'GeometryCollection');
+        return this.topoObjName(this.countriesTopo);
     },
 
     /* ===================== 构建图层 ===================== */
-    buildLayers() {
+    // 首屏图层：国家 + 省份粗档（投影只在这里拟合一次，精档复用同一投影）
+    buildBaseLayers() {
         const W = 4096, H = 2048;
-        const objName = this.provinceObjName();
+        const l0Obj = this.topoObjName(this.topoL0);
         // 投影：把整个世界一次性铺进 W×H 逻辑画布，此后几何都是平面坐标
-        this.proj = d3.geoMercator().fitSize([W, H], topojson.feature(this.topo, this.topo.objects[objName]));
+        this.proj = d3.geoMercator().fitSize([W, H], topojson.feature(this.topoL0, this.topoL0.objects[l0Obj]));
         this.geoPath = d3.geoPath(this.proj);
 
-        // 构建单个图层：用 topojson.feature() 转 GeoJSON，生成 Path2D + bbox
-        const buildLayer = (topo, objKey) => {
-            const obj = topo.objects[objKey];
-            const feats = topojson.feature(topo, obj).features;
-            const layer = { paths: new Map(), bbox: new Map() };
-            let gx0 = Infinity, gy0 = Infinity, gx1 = -Infinity, gy1 = -Infinity;
-            for (const f of feats) {
-                const id = f.id;
-                const d = this.geoPath(f);
-                if (!d) continue;
-                layer.paths.set(id, new Path2D(d));
-                const b = this.geoPath.bounds(f);
-                if (!b) continue;
-                const flat = [b[0][0], b[0][1], b[1][0], b[1][1]];
-                layer.bbox.set(id, flat);
-                gx0 = Math.min(gx0, flat[0]); gy0 = Math.min(gy0, flat[1]);
-                gx1 = Math.max(gx1, flat[2]); gy1 = Math.max(gy1, flat[3]);
-            }
-            return { layer, bounds: [gx0, gy0, gx1, gy1] };
-        };
-
-        const objNameL0 = Object.keys(this.topoL0.objects).find(k => this.topoL0.objects[k].type === 'GeometryCollection');
-        const cObjName = this.countryObjName();
-
         // 国家图层
-        const cRes = buildLayer(this.countriesTopo, cObjName);
+        const cRes = this.buildLayer(this.countriesTopo, this.countryObjName());
         this.layers.country = cRes.layer;
-        // 国家名称（Natural Earth 自带 NAME_ZH，低缩放悬停时显示国家而不是省份）
+        this.buildCountryMeta();
+
+        // 省份粗档
+        const l0Res = this.buildLayer(this.topoL0, l0Obj);
+        this.layers.provL0 = l0Res.layer;
+        // 世界范围取粗档：与精档几乎一致，但不会因后台图层切换而改变相机
+        this.worldBounds = l0Res.bounds;
+
+        // 合并陆地底色：把所有国家路径拼成一个 Path2D，作为国家级 LOD 的兜底填充
+        const land = new Path2D();
+        for (const p of this.layers.country.paths.values()) land.addPath(p);
+        this.landBasePath = land;
+    },
+
+    // 国家名称（Natural Earth 自带 NAME_ZH，低缩放悬停时显示国家而不是省份）
+    buildCountryMeta() {
+        const cObjName = this.countryObjName();
         this.countryMeta = new Map();
         for (const g of this.countriesTopo.objects[cObjName].geometries) {
             const p = g.properties || {};
@@ -228,45 +260,64 @@ const MapView = {
                 name: p.NAME_ZH || p.NAME_ZHT || p.NAME || p.ADMIN || g.id,
             });
         }
-        // 省份粗档
-        const l0Res = buildLayer(this.topoL0, objNameL0);
-        this.layers.provL0 = l0Res.layer;
-        // 省份精档（同时作为拾取图层）
-        const l1Res = buildLayer(this.topo, objName);
-        this.layers.provL1 = l1Res.layer;
+    },
 
-        // 拾取/军队/高亮统一使用精档
+    // 省份精档：只构建几何并切换到精档拾取，不动相机 / 世界范围
+    buildPreciseLayer() {
+        const l1Res = this.buildLayer(this.topo, this.topoObjName(this.topo));
+        this.layers.provL1 = l1Res.layer;
         this.paths = this.layers.provL1.paths;
         this.bbox = this.layers.provL1.bbox;
         // 顺序索引
         this.seqIndex = new Map();
         let seq = 0;
         for (const id of this.paths.keys()) this.seqIndex.set(id, seq++);
+    },
 
-        // 世界范围取省份精档
-        this.worldBounds = l1Res.bounds;
-
-        // 合并陆地底色：把所有国家路径拼成一个 Path2D，作为国家级 LOD 的兜底填充
-        const land = new Path2D();
-        for (const p of this.layers.country.paths.values()) land.addPath(p);
-        this.landBasePath = land;
-
+    // 构建单个图层：用 topojson.feature() 转 GeoJSON，生成 Path2D + bbox
+    buildLayer(topo, objKey) {
+        const obj = topo.objects[objKey];
+        const feats = topojson.feature(topo, obj).features;
+        const layer = { paths: new Map(), bbox: new Map() };
+        let gx0 = Infinity, gy0 = Infinity, gx1 = -Infinity, gy1 = -Infinity;
+        for (const f of feats) {
+            const id = f.id;
+            const d = this.geoPath(f);
+            if (!d) continue;
+            layer.paths.set(id, new Path2D(d));
+            const b = this.geoPath.bounds(f);
+            if (!b) continue;
+            const flat = [b[0][0], b[0][1], b[1][0], b[1][1]];
+            layer.bbox.set(id, flat);
+            gx0 = Math.min(gx0, flat[0]); gy0 = Math.min(gy0, flat[1]);
+            gx1 = Math.max(gx1, flat[2]); gy1 = Math.max(gy1, flat[3]);
+        }
+        return { layer, bounds: [gx0, gy0, gx1, gy1] };
     },
 
     // 把所有线要素（国界/省界/海岸线）按网格合并成 tile：每帧只描边视口内的少数 tile
-    buildLineTiles() {
-        const p0 = Object.keys(this.topoL0.objects).find(k => this.topoL0.objects[k].type === 'GeometryCollection');
-        const p1 = this.provinceObjName();
+    // withPrecise=false 时只建首屏需要的国家层与粗档，精档后台到达后增量补上
+    buildLineTiles(withPrecise) {
+        const p0 = this.topoObjName(this.topoL0);
         const c = this.countryObjName();
-        this.lineTiles = {
+        const tiles = {
             // 国家级：内部国界与海岸线分开，避免同一条线被描边两次
             country: this.buildMeshTiles(this.countriesTopo, c, (a, b) => a !== b),
             coastCountry: this.buildMeshTiles(this.countriesTopo, c, (a, b) => a === b),
             provL0: this.buildMeshTiles(this.topoL0, p0, (a, b) => a !== b),
-            provL1: this.buildMeshTiles(this.topo, p1, (a, b) => a !== b),
             coastL0: this.buildMeshTiles(this.topoL0, p0, (a, b) => a === b),
-            coastL1: this.buildMeshTiles(this.topo, p1, (a, b) => a === b),
         };
+        if (withPrecise && this.topo) {
+            // 精档只需要补 l1 的两套线；国家层与粗档线已在首帧建好，不重复构建
+            const p1 = this.topoObjName(this.topo);
+            this.lineTiles = {
+                ...(this.lineTiles || {}),
+                provL1: this.buildMeshTiles(this.topo, p1, (a, b) => a !== b),
+                coastL1: this.buildMeshTiles(this.topo, p1, (a, b) => a === b),
+            };
+            return;
+        }
+        this.lineTiles = tiles;
     },
 
     // 将 meshArcs 折线投影后按空间网格合并为 Path2D tile
@@ -724,10 +775,12 @@ const MapView = {
     },
 
     /* ===================== 前线索引（按弧段归属建表） ===================== */
-    buildBorderIndex() {
-        const objName = this.provinceObjName();
-        const obj = this.topo.objects[objName];
-        const { arcs, transform } = this.topo;
+    buildBorderIndex(topo) {
+        topo = topo || this.topo || this.topoL0;
+        const objName = this.topoObjName(topo);
+        const obj = topo.objects[objName];
+        const { arcs, transform } = topo;
+        this.borderIndex = new Map();
 
         // 构建 弧段索引 → 使用该弧段的省份集合（meshArcs 不返回 objects，需自行反查）
         const arcProvinces = {};
@@ -839,14 +892,24 @@ const MapView = {
         this.targetOffsetY = this.offsetY;
     },
 
-    fitWorld() {
-        if (!this.ready) return;
+    // 缩放范围按全图适配比例换算：手机 fitScale 只有桌面 1/3，
+    // 若沿用固定的 24 倍上限，双指要张合十几次才能到头，且最后全是马赛克。
+    // 54 倍与桌面原有上限（24 / fitScale≈0.44）一致。
+    updateZoomLimits() {
         const [x0, y0, x1, y1] = this.worldBounds;
         const w = x1 - x0, h = y1 - y0;
+        if (!(w > 0) || !(h > 0) || !(this.viewW > 0) || !(this.viewH > 0)) return;
         const sx = this.viewW / w, sy = this.viewH / h;
         this.fitScale = Math.min(sx, sy) * 0.96;
-        // 最小缩放略小于全图适配，最大放大 24 倍，避免无意义的超远缩放
         this.minScale = this.fitScale * 0.9;
+        this.maxScale = Math.max(this.fitScale * 54, 4);
+    },
+
+    fitWorld() {
+        if (!this.ready) return;
+        this.updateZoomLimits();
+        const [x0, y0, x1, y1] = this.worldBounds;
+        const w = x1 - x0, h = y1 - y0;
         this.scale = this.fitScale;
         this.offsetX = (this.viewW - w * this.scale) / 2 - x0 * this.scale;
         this.offsetY = (this.viewH - h * this.scale) / 2 - y0 * this.scale;
@@ -861,16 +924,58 @@ const MapView = {
         this.requestDraw();
     },
 
+    // 以屏幕点 (sx, sy) 为锚点缩放：滚轮、双击、双击触摸共用
+    zoomAt(sx, sy, newScale) {
+        const w = this.screenToWorld(sx, sy);
+        const s = this.clampScale(newScale);
+        if (s === this.scale) return;
+        this.scale = s;
+        this.offsetX = sx - w.x * s;
+        this.offsetY = sy - w.y * s;
+        // 缩放可能跨过 LOD 分界，旧的悬停目标已失效
+        this.clearHover();
+        this.clampCamera();
+        this.requestDraw();
+    },
+
+    clearHover() {
+        this.hoverProvince = null;
+        this.hoverCountry = null;
+        this.hoverArmyId = null;
+        this.hoverAirId = null;
+        this.hoverFleetId = null;
+        this.hideTooltip();
+    },
+
     resize() {
         if (!this.canvas) return;
         const rect = this.canvas.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) return;
         const dpr = Math.min(window.devicePixelRatio || 1, 2);
-        this.canvas.width = rect.width * dpr;
-        this.canvas.height = rect.height * dpr;
+
+        // 手机地址栏收起/展开会频繁触发 resize。这里保留当前视野中心与缩放，
+        // 只按新的视口尺寸重新钳制；否则每次 resize 都会跳回全图。
+        const hadView = this.ready && this.viewW > 0 && this.viewH > 0;
+        const oldScale = this.scale;
+        const cx = hadView ? (this.viewW / 2 - this.offsetX) / oldScale : 0;
+        const cy = hadView ? (this.viewH / 2 - this.offsetY) / oldScale : 0;
+
+        this.canvas.width = Math.round(rect.width * dpr);
+        this.canvas.height = Math.round(rect.height * dpr);
         this.ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         this.viewW = rect.width;
         this.viewH = rect.height;
-        if (this.ready) { this.fitWorld(); this.draw(); }
+
+        if (!this.ready) return;
+        this.updateZoomLimits();
+        if (!hadView) { this.fitWorld(); }
+        else {
+            this.scale = this.clampScale(oldScale);
+            this.offsetX = this.viewW / 2 - cx * this.scale;
+            this.offsetY = this.viewH / 2 - cy * this.scale;
+            this.clampCamera();
+        }
+        this.draw();
     },
 
     /* ===================== 主绘制 ===================== */
@@ -997,9 +1102,10 @@ const MapView = {
             this.drawCountryBorders(g);
         } else {
             // 省份层级：先铺国家底色兜底（admin-1 未覆盖的国家不会露出海洋色），
-            // 再按缩放选省份粗档 / 精档
+            // 再按缩放选省份粗档 / 精档；精档尚未加载完时先用粗档顶上
             this.drawCountryFills(g);
-            if (this.scale < this.LOD_PROV_COARSE) {
+            const usePrecise = this.scale >= this.LOD_PROV_COARSE && this.layers.provL1;
+            if (!usePrecise) {
                 this.drawProvinceFills(g, 'l0', this.layers.provL0);
                 this.drawProvinceBorders(g, 'provL0');
             } else {
@@ -1113,7 +1219,7 @@ const MapView = {
         // 海岸线也按 LOD 取档：全图用 50m 粗档（顶点少一个数量级），
         // 中等缩放用省界粗档，放大后用精档；只描边视野内的 tile。
         const key = this.scale < this.LOD_COUNTRY ? 'coastCountry'
-                  : this.scale < this.LOD_PROV_COARSE ? 'coastL0'
+                  : (this.scale < this.LOD_PROV_COARSE || !this.lineTiles.coastL1) ? 'coastL0'
                   : 'coastL1';
         // 光晕只用于全图概览，避免中高缩放下同一条线描两遍
         if (this.scale < this.LOD_COUNTRY) {
@@ -1625,7 +1731,7 @@ const MapView = {
             // 在国家级视野选中单位时自动下钻到省份层级，否则目标省份不可点
             if (this.scale < this.LOD_COUNTRY) {
                 const c = this.provinceCenter(provinceId);
-                if (c) this.centerOn(c.x, c.y, this.LOD_COUNTRY + 0.4);
+                if (c) this.centerOn(c.x, c.y, this.LOD_COUNTRY * 1.2);
             }
         };
 
@@ -1676,25 +1782,13 @@ const MapView = {
     onWheel(e) {
         e.preventDefault();
         const pos = this.getMousePos(e);
-        const worldBefore = this.screenToWorld(pos.x, pos.y);
         const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-        const newScale = this.clampScale(this.scale * factor);
-        if (newScale === this.scale) return;
-        this.offsetX = pos.x - worldBefore.x * newScale;
-        this.offsetY = pos.y - worldBefore.y * newScale;
-        this.scale = newScale;
-        // 缩放可能跨过 LOD 分界，旧的悬停目标已失效
-        this.hoverProvince = null;
-        this.hoverCountry = null;
-        this.hoverArmyId = null;
-        this.hoverAirId = null;
-        this.hoverFleetId = null;
-        this.hideTooltip();
-        this.clampCamera();
-        this.requestDraw();
+        this.zoomAt(pos.x, pos.y, this.scale * factor);
     },
 
     onDoubleClick(e) {
+        // 移动端的双击已经由 onTouchEnd 处理；避免同一次双击缩放两次
+        if (performance.now() - (this._lastTouchTime || 0) < 700) return;
         const pos = this.getMousePos(e);
         const world = this.screenToWorld(pos.x, pos.y);
 
@@ -1704,7 +1798,7 @@ const MapView = {
             const b = iso && this.layers.country.bbox.get(iso);
             if (b) {
                 this.centerOn((b[0] + b[2]) / 2, (b[1] + b[3]) / 2,
-                              Math.max(this.LOD_COUNTRY + 0.2, this.scale * 2));
+                              Math.max(this.LOD_COUNTRY * 1.1, this.scale * 2));
             }
             return;
         }
@@ -1720,6 +1814,8 @@ const MapView = {
     onTouchStart(e) {
         if (!this.ready) return;
         e.preventDefault();
+        this._lastTouchTime = performance.now();
+        this.hideTooltip();
         const touches = e.touches;
         if (touches.length === 1) {
             const t = touches[0];
@@ -1795,7 +1891,13 @@ const MapView = {
     },
 
     onTouchEnd(e) {
+        const now = performance.now();
+        this._lastTouchTime = now;
+
         if (this.isPinching) {
+            // 双指结束后如果还剩一指，转为拖动；同时取消双击计时，
+            // 避免「捏合结束时一指先抬起」被误判成双击
+            this._lastTapTime = 0;
             if (e.touches.length === 1) {
                 const t = e.touches[0];
                 this.isPinching = false;
@@ -1815,7 +1917,23 @@ const MapView = {
             } else { cx = this.lastMouseX; cy = this.lastMouseY; }
             const moved = Math.abs(cx - this.dragStartX) + Math.abs(cy - this.dragStartY);
             this.isDragging = false;
-            if (moved < 8) this.activateAt(this.getPos(cx, cy));
+            if (moved < 8) {
+                const pos = this.getPos(cx, cy);
+                // 移动端双击放大：与桌面 dblclick 行为一致，锚定在点击位置
+                const isDoubleTap = now - (this._lastTapTime || 0) < 320 &&
+                    Math.hypot(pos.x - (this._lastTapX || 0), pos.y - (this._lastTapY || 0)) < 30;
+                if (isDoubleTap) {
+                    this._lastTapTime = 0;
+                    this.zoomAt(pos.x, pos.y, this.scale * 1.8);
+                    return;
+                }
+                this._lastTapTime = now;
+                this._lastTapX = pos.x;
+                this._lastTapY = pos.y;
+                this.activateAt(pos);
+                // 触屏没有 mouseleave：提示过一会儿自动收起，避免一直贴在屏幕上
+                this.hideTooltipSoon();
+            }
         }
     },
 
@@ -1916,8 +2034,19 @@ const MapView = {
     },
 
     hideTooltip() {
+        if (this._tipTimer) { clearTimeout(this._tipTimer); this._tipTimer = 0; }
         const tip = document.getElementById('tooltip');
         if (tip) tip.style.display = 'none';
+    },
+
+    // 触屏点按后没有 mouseleave，延迟收起提示
+    hideTooltipSoon() {
+        if (this._tipTimer) clearTimeout(this._tipTimer);
+        this._tipTimer = setTimeout(() => {
+            this._tipTimer = 0;
+            const tip = document.getElementById('tooltip');
+            if (tip) tip.style.display = 'none';
+        }, 2200);
     },
 };
 

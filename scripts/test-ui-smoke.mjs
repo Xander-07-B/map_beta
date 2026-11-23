@@ -94,7 +94,7 @@ sandbox.globalThis = sandbox;
 sandbox.alert = () => {};
 
 const ctx = vm.createContext(sandbox);
-for (const f of ['js/data.js', 'js/game.js', 'js/ui.js']) {
+for (const f of ['js/render/data.js', 'js/render/game.js', 'js/render/ui.js']) {
     vm.runInContext(readFileSync(f, 'utf8'), ctx, { filename: f });
 }
 const Game = sandbox.Game;

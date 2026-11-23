@@ -234,6 +234,10 @@ function tickConstruction(c, proj, ctx, eco, s) {
 export function settleEconomy(s, ctx) {
     const eco = economyOf(ctx.scenario);
     const summary = { produced: {}, constructed: 0, researched: 0, days: 1 };
+    // 部队集合在循环内不变，提到循环外避免每国重复取引用
+    const armies = s.armies || [];
+    const airForces = s.airForces || [];
+    const fleets = s.fleets || [];
 
     for (const tag of orderedKeys(s.countries)) {
         const c = s.countries[tag];
@@ -304,18 +308,17 @@ export function settleEconomy(s, ctx) {
         }
 
         // 7) 补给消耗（军队维持）——按补给网络折算，被切断的部队不消耗补给
-        const forces = s.armies || [];
         let supplyUnits = 0;
-        for (const a of forces) {
+        for (const a of armies) {
             if (a.owner !== tag || a.strength <= 0) continue;
             supplyUnits += Math.max(0, Math.min(1, supplyFactorFor(s, ctx, a.provinceId)));
         }
-        for (const g of s.airForces || []) {
+        for (const g of airForces) {
             if (g.owner !== tag || g.planes <= 0) continue;
             const tpl = ctx.aircraft?.[g.template];
             supplyUnits += (tpl?.cost?.supplies || 0) * (g.planes / Math.max(1, tpl?.planes || 1));
         }
-        for (const f of s.fleets || []) {
+        for (const f of fleets) {
             if (f.owner !== tag || f.ships <= 0) continue;
             const tpl = ctx.ships?.[f.template];
             supplyUnits += (tpl?.cost?.supplies || 0) * (f.ships / Math.max(1, tpl?.ships || 1));

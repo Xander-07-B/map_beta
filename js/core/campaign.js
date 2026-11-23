@@ -4,23 +4,23 @@
  * 不碰 DOM、不产生渲染副作用——后续可整体搬进 Web Worker。
  * ============================================================ */
 
-import { Clock, formatDate, parseDate } from './core/clock.js';
-import { Rng } from './core/rng.js';
-import { createWorldState } from './core/state.js';
-import { applyCommand } from './core/commands.js';
-import { drainPending, enqueue, installCoreRules, applyEffects } from './core/rules.js';
-import { cloneState, orderedKeys } from './core/determinism.js';
-import { evalTrigger } from './content/conditions.js';
-import { loadScenario } from './content/loader.js';
-import { settleEconomy } from './core/economy.js';
-import { settleWar } from './core/war.js';
-import { computeSupplyAccess, settleAirNavy, settleArmyOrders } from './core/airnavy.js';
+import { Clock, formatDate, parseDate } from './clock.js';
+import { Rng } from './rng.js';
+import { createWorldState } from './state.js';
+import { applyCommand } from './commands.js';
+import { drainPending, enqueue, installCoreRules, applyEffects } from './rules.js';
+import { cloneState, orderedKeys } from './determinism.js';
+import { evalTrigger } from '../content/conditions.js';
+import { loadScenario } from '../content/loader.js';
+import { settleEconomy } from './economy.js';
+import { settleWar } from './war.js';
+import { computeSupplyAccess, settleAirNavy, settleArmyOrders } from './airnavy.js';
 import {
     migrateSave, buildIncrementalSave, resolveIncrementalSave, SAVE_VERSION,
-} from './core/save.js';
-import { applyPeaceTerms } from './core/diplomacy.js';
-import { TICKS_PER_MONTH } from './core/clock.js';
-import { runAITick } from './core/ai.js';
+} from './save.js';
+import { applyPeaceTerms } from './diplomacy.js';
+import { TICKS_PER_MONTH } from './clock.js';
+import { runAITick } from './ai.js';
 
 export class Campaign {
     /**

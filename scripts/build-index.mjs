@@ -1,7 +1,11 @@
-// scripts/build-index.mjs — 离线构建省份索引：邻接表 + 元数据 + bbox
+// scripts/build-index.mjs — 离线构建省份索引：邻接表 + 元数据
 // 用法: node scripts/build-index.mjs
 // 几何来自 provinces.l1.topo.json（属性已剥离以减小体积），
 // 名称/归属等属性从原始 Natural Earth GeoJSON 按 ne_id 关联。
+//
+// 只写运行时真正读取的字段（name / owner / scalerank / coastal）。
+// 早期版本还写了 nameEn / iso / type / bbox 和重复的 id，占索引体积一半以上，
+// 浏览器解析后却没人用；删掉后 index.json 从 1.3 MB 降到约 0.5 MB。
 import { readFileSync, writeFileSync } from "node:fs";
 import * as topojson from "topojson-client";
 
@@ -24,26 +28,7 @@ const adj = topojson.neighbors(geoms);
 const neighbors = {};
 geoms.forEach((g, i) => (neighbors[g.id] = adj[i].map(j => geoms[j].id)));
 
-// ② bbox：解码弧段坐标，取 lon/lat 包围盒
-const { arcs, transform } = topo;
-const arcCache = new Map();
-const decodeArc = (i) => {
-    const idx = i < 0 ? ~i : i;
-    let pts = arcCache.get(idx);
-    if (!pts) {
-        let x = 0, y = 0;
-        pts = arcs[idx].map(([dx, dy]) => {
-            x += dx; y += dy;
-            // TopoJSON 反量化：world = quantized * scale + translate
-            return [x * transform.scale[0] + transform.translate[0],
-                    y * transform.scale[1] + transform.translate[1]];
-        });
-        arcCache.set(idx, pts);
-    }
-    return i < 0 ? pts.slice().reverse() : pts;
-};
-
-// 弧段引用计数：只被一个省引用的弧段就是海岸线（两个省共享的才是内陆省界），
+// ② 弧段引用计数：只被一个省引用的弧段就是海岸线（两个省共享的才是内陆省界），
 // 由此可以真实判定省份是否沿海——舰队部署与移动都依赖这个字段。
 const arcRefs = new Map();
 const provinceArcs = new Map();   // province id -> Set<arcIndex>
@@ -59,23 +44,7 @@ geoms.forEach((g) => {
     for (const ring of rings.flat()) for (const ai of ring) noteArc(g.id, ai);
 });
 
-function bboxOf(geom) {
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    const rings = geom.type === "Polygon" ? [geom.arcs]
-              : geom.type === "MultiPolygon" ? geom.arcs : [];
-    for (const ring of rings.flat()) {
-        for (const i of ring) {
-            const a = decodeArc(i);
-            for (const [x, y] of a) {
-                if (x < x0) x0 = x; if (x > x1) x1 = x;
-                if (y < y0) y0 = y; if (y > y1) y1 = y;
-            }
-        }
-    }
-    return [x0, y0, x1, y1];
-}
-
-// ③ 元数据
+// ③ 元数据（只保留运行时读取的字段）
 const meta = {};
 let missingProps = 0;
 let coastalCount = 0;
@@ -86,15 +55,10 @@ geoms.forEach((g) => {
     const coastal = [...(provinceArcs.get(g.id) || [])].some((idx) => arcRefs.get(idx) === 1);
     if (coastal) coastalCount++;
     meta[g.id] = {
-        id: +g.id,
         name: p.name_zh || p.name || `prov${g.id}`,
-        nameEn: p.name || `prov${g.id}`,
         owner: p.adm0_a3 || null,
-        iso: p.iso_a2 || null,
-        type: p.type || null,
         scalerank: p.scalerank ?? 9,
         coastal,
-        bbox: bboxOf(g),
     };
 });
 

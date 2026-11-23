@@ -133,6 +133,7 @@ export function createWorldState({ scenario, seed = 0x1936, rng, divisions, airc
         nextInviteId: 1,
         nextOfferId: 1,
         nextCmdSeq: 1,
+        controllerVersion: 1,   // 省份控制权变更计数（派生索引用，不参与玩法）
     };
 
     // 国家

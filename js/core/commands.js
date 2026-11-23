@@ -417,6 +417,8 @@ export function executeCommand(cmd, s, ctx) {
 
         case 'setController':
             s.provinces[cmd.province].controller = cmd.to;
+            // 控制权索引是派生缓存，靠版本号失效
+            s.controllerVersion = (s.controllerVersion || 0) + 1;
             break;
 
         case 'chooseFocus': {

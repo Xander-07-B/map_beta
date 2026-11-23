@@ -191,6 +191,8 @@ export function installCoreRules() {
             const p = s.provinces[pid];
             if (p) p.controller = to;
         }
+        // 控制权索引是派生缓存，靠版本号失效
+        s.controllerVersion = (s.controllerVersion || 0) + 1;
         recomputeVictoryPoints(s);
         if (from !== to) {
             pushHistory(s, `州 ${state} 归属由 ${from || '无'} 变更为 ${to}${reason ? `（${reason}）` : ''}`);

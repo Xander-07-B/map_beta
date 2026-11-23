@@ -11,11 +11,29 @@ import { applyCommand } from './commands.js';
 import { dateOf } from './economy.js';
 import {
     clamp01, SUPPLY_HUB, supplyFactorOf, supplyFactorFor,
-    damageSupplyPenalty, MAX_PROVINCE_DAMAGE,
+    damageSupplyPenalty, MAX_PROVINCE_DAMAGE, controllerIndex,
 } from './supply.js';
 
 /** 制空权对地面战斗的加成上限 */
 export const AIR_SUPPORT_MAX = 0.25;
+
+/**
+ * 受损省份集合（派生缓存，不进存档）。
+ * 省份总数为数千，逐 tick 全表扫描只为修复已受损省份太浪费；
+ * 受损只可能由本模块的轰炸写入，因此这里惰性建表并增量维护。
+ * 读档 / 恢复会替换 state 对象，WeakMap 自动失效，首次使用时重建。
+ */
+const _damaged = new WeakMap();
+
+function damageSet(s) {
+    let set = _damaged.get(s);
+    if (!set) {
+        set = new Set();
+        for (const p of Object.values(s.provinces)) if (p.damage > 0) set.add(p.id);
+        _damaged.set(s, set);
+    }
+    return set;
+}
 
 // ===================== 补给网络 =====================
 
@@ -32,36 +50,43 @@ export function computeSupplyAccess(s, ctx) {
     const hasForces = (s.armies && s.armies.length) || (s.fleets && s.fleets.length) || (s.airForces && s.airForces.length);
     if (!hasForces) return out;
 
-    const neighbors = ctx.neighbors;
-    const byOwner = new Map();   // tag -> [provinceId]
-    for (const p of Object.values(s.provinces)) {
-        if (!p.controller) continue;
-        let arr = byOwner.get(p.controller);
-        if (!arr) { arr = []; byOwner.set(p.controller, arr); }
-        arr.push(p.id);
-    }
-
-    // 需要计算的国家：拥有任何武装力量且未投降
+    // 需要计算的国家：拥有任何武装力量
     const needed = new Set();
     for (const a of s.armies || []) if (a.strength > 0) needed.add(a.owner);
     for (const f of s.fleets || []) if (f.ships > 0) needed.add(f.owner);
     for (const a of s.airForces || []) if (a.planes > 0) needed.add(a.owner);
+    if (needed.size === 0) return out;
 
+    // 同一阵营的盟友共用一张补给网，按阵营分组只做一次 BFS
+    const factionOfTag = new Map();
+    for (const fac of s.alliances || []) {
+        for (const m of fac.members || []) factionOfTag.set(m, fac);
+    }
+    const groups = new Map();   // gid -> { friendly: Set<tag> }
     for (const tag of [...needed].sort()) {
-        const friendly = new Set([tag]);
-        for (const fac of s.alliances || []) {
-            if (fac.members.includes(tag)) for (const m of fac.members) friendly.add(m);
+        const fac = factionOfTag.get(tag);
+        const gid = fac ? fac.id : `#${tag}`;
+        let g = groups.get(gid);
+        if (!g) {
+            g = { friendly: new Set(fac ? fac.members : [tag]) };
+            groups.set(gid, g);
         }
+        g.friendly.add(tag);
+    }
 
-        // 补给枢纽（己方控制的高供给省份）
+    // 控制方索引有派生缓存：只有控制权变化时才重建
+    const byOwner = controllerIndex(s);
+    const neighbors = ctx.neighbors;
+    for (const g of groups.values()) {
+        // 补给枢纽（己方/盟友控制的高供给省份）
         const hubs = [];
-        for (const t of friendly) {
+        for (const t of [...g.friendly].sort()) {
             for (const pid of byOwner.get(t) || []) {
                 const p = s.provinces[pid];
                 if (p && (p.supply || 0) >= SUPPLY_HUB) hubs.push(pid);
             }
         }
-        if (hubs.length === 0) continue;   // 无补给源：该国所有部队都被切断
+        if (hubs.length === 0) continue;   // 无补给源：该阵营所有部队都被切断
 
         const visited = new Set(hubs);
         const queue = hubs;
@@ -69,11 +94,11 @@ export function computeSupplyAccess(s, ctx) {
         while (head < queue.length) {
             const pid = queue[head++];
             out.set(pid, supplyFactorOf(s.provinces[pid]));
-            for (const nid of neighbors?.[String(pid)] || []) {
+            for (const nid of neighbors?.[pid] || []) {
                 if (visited.has(nid)) continue;
                 const np = s.provinces[nid];
                 if (!np || !np.controller) continue;
-                if (!friendly.has(np.controller)) continue;
+                if (!g.friendly.has(np.controller)) continue;
                 visited.add(nid);
                 queue.push(nid);
             }
@@ -273,6 +298,7 @@ export function settleAirNavy(s, ctx) {
         const dmg = power * 0.02 * airDefense;
         if (dmg <= 0) continue;
         province.damage = Math.min(MAX_PROVINCE_DAMAGE, (province.damage || 0) + dmg);
+        damageSet(s).add(province.id);
         summary.bombed++;
         // 受损跨过整十才写一条播报，避免历史被轰炸记录淹没
         const before = Math.floor((province.damage - dmg) / 10);
@@ -298,12 +324,17 @@ export function settleAirNavy(s, ctx) {
         const dmg = f.ships * (tpl?.bombardment || 0) * 0.5;
         if (dmg <= 0) continue;
         province.damage = Math.min(MAX_PROVINCE_DAMAGE, (province.damage || 0) + dmg);
+        damageSet(s).add(province.id);
         summary.bombed++;
     }
 
     // ---------- 受损自然修复（未被轰炸的省份缓慢恢复） ----------
-    for (const p of Object.values(s.provinces)) {
-        if (p.damage > 0) p.damage = Math.max(0, p.damage - 0.2);
+    const damaged = damageSet(s);
+    for (const pid of damaged) {
+        const p = s.provinces[pid];
+        if (!p) { damaged.delete(pid); continue; }
+        p.damage = Math.max(0, p.damage - 0.2);
+        if (p.damage <= 0) damaged.delete(pid);
     }
 
     return summary;
