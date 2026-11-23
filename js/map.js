@@ -1256,11 +1256,9 @@ const MapView = {
         this.hoverProvince = prov;
         if ((prov ? prov.id : null) !== prevHover) this.requestDraw();
         if (prov) {
+            // 悬停只显示提示与悬停高亮，不改变选中态——选中由点击完成
             this.showTooltip(prov, pos);
             this.canvas.style.cursor = 'pointer';
-            if (this.game.selectedProvince !== prov.id) {
-                this.game.selectProvince(prov.id);
-            }
         } else {
             this.hideTooltip();
             this.canvas.style.cursor = 'grab';
@@ -1394,8 +1392,9 @@ const MapView = {
             const prov = this.findProvinceAt(world.x, world.y);
             this.hoverProvince = prov;
             if (prov) {
+                // 悬停只显示提示与悬停高亮，不改变选中态——选中由点按完成
                 this.showTooltip(prov, pos);
-                if (this.game.selectedProvince !== prov.id) this.game.selectProvince(prov.id);
+                this.requestDraw();
             } else this.hideTooltip();
         }
     },
