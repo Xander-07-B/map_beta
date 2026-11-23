@@ -185,6 +185,12 @@ const Game = {
         return map[iso3] || null;
     },
 
+    /** 战役 tag → 地图层 ISO3（除德国外，可玩国家的 tag 与 ISO3 相同） */
+    ISO_BY_TAG: { GER: 'DEU' },
+    isoOfTag(tag) {
+        return this.ISO_BY_TAG[tag] || tag;
+    },
+
     areAtWar(a, b) {
         return this.state?.wars?.some((w) => w.status === 'active' &&
             ((w.a === a && w.b === b) || (w.a === b && w.b === a))) || false;

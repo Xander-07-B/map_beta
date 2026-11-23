@@ -103,6 +103,8 @@ const App = {
         if (typeof MapView !== 'undefined' && MapView.setTheme) {
             MapView.setTheme(this.theme);
         }
+        // 地形图例的颜色随主题变化
+        if (typeof UI !== 'undefined' && UI.updateMapLegend) UI.updateMapLegend();
     },
 
     // ===================== 启动菜单 =====================

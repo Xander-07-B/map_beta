@@ -370,17 +370,47 @@ button {
 #gameMap:active { cursor: grabbing; }
 
 /* ---------- 顶部浮层 ---------- */
+/* 顶栏只放时间/速度/菜单；资源等指标回到底部状态条 */
 #topBar {
     position: absolute;
-    top: 14px; left: 14px; right: 14px;
+    top: 12px; left: 12px; right: 12px;
     display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 10px;
+    flex-direction: column;
+    gap: 8px;
     z-index: 30;
     pointer-events: none;
 }
-#topBar > * { pointer-events: auto; }
+.top-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: stretch;
+    gap: 8px;
+    pointer-events: none;
+}
+.top-main > * { pointer-events: auto; }
+.top-left { justify-self: start; }
+.top-center { justify-self: center; }
+.top-right { justify-self: end; }
+
+/* 状态栏：底部左侧胶囊，只显示「图标 + 简称 + 数值」，
+   悬停展开全称；右侧留给小地图，窄屏改为横向滚动 */
+#statBar {
+    position: absolute;
+    left: 14px;
+    bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 13px;
+    max-width: calc(100% - 210px);
+    padding: 5px 14px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--pill);
+    backdrop-filter: var(--panel-blur);
+    box-shadow: var(--shadow-soft);
+    z-index: 26;
+    pointer-events: auto;
+}
 
 .top-left, .top-center, .top-right {
     display: flex;
@@ -518,7 +548,7 @@ button {
 
 #minimapContainer {
     position: absolute;
-    bottom: 14px; right: 14px;
+    bottom: 54px; right: 14px;
     width: 172px; height: 88px;
     background: rgba(7, 12, 20, 0.82);
     border: 1px solid var(--border);
@@ -532,7 +562,7 @@ button {
 
 .map-hint {
     position: absolute;
-    bottom: 82px; left: 14px;
+    bottom: 76px; left: 14px;
     padding: 6px 12px;
     background: var(--bg-panel);
     border: 1px solid var(--border);
@@ -543,10 +573,42 @@ button {
     z-index: 24;
 }
 
+/* 地图视图图例：切换到前线 / 地形 / 省份视图时替换操作提示 */
+.map-legend {
+    position: absolute;
+    left: 14px; bottom: 76px;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    max-width: min(560px, calc(100vw - 220px));
+    padding: 6px 12px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    border-radius: var(--pill);
+    font-size: 11px;
+    color: var(--text-dim);
+    backdrop-filter: var(--panel-blur);
+    box-shadow: var(--shadow-soft);
+    z-index: 24;
+}
+.map-legend .lg-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+.map-legend .lg-dot {
+    width: 9px; height: 9px;
+    border-radius: 3px;
+    flex-shrink: 0;
+    box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
 /* ---------- 选中省份速览卡 ---------- */
 .province-card {
     position: absolute;
-    left: 14px; bottom: 118px;
+    left: 14px; bottom: 112px;
     width: 272px;
     max-height: 46vh;
     overflow-y: auto;
@@ -622,6 +684,8 @@ button {
 .province-card .pc-note { margin-top: 9px; color: var(--text-dim); line-height: 1.5; }
 
 /* ---------- 右侧图标栏 ---------- */
+/* 只显示图标，悬停 / 键盘聚焦时在左侧弹出文字标签，
+   避免整条栏占满屏幕高度、挡住右下角的小地图。 */
 #iconRail {
     position: absolute;
     top: 50%; right: 14px;
@@ -630,7 +694,7 @@ button {
     flex-direction: column;
     align-items: center;
     gap: 4px;
-    padding: 8px 6px;
+    padding: 7px 6px;
     background: var(--bg-panel);
     border: 1px solid var(--border);
     border-radius: var(--radius-lg);
@@ -639,16 +703,42 @@ button {
     z-index: 26;
 }
 .rail-btn {
-    width: 52px; height: 52px;
-    border-radius: 14px;
+    position: relative;
+    width: 38px; height: 38px;
+    border-radius: 11px;
     color: var(--text-dim);
-    font-size: 17px;
+    font-size: 16px;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
     gap: 3px;
     border: 1px solid transparent;
+    flex-shrink: 0;
 }
 .rail-btn .rb-icon { line-height: 1; }
-.rail-btn .rb-label { font-size: 9px; line-height: 1; letter-spacing: .04em; }
+.rail-btn .rb-label {
+    position: absolute;
+    right: calc(100% + 10px);
+    top: 50%;
+    transform: translateY(-50%) translateX(4px);
+    padding: 5px 9px;
+    border-radius: 8px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-soft);
+    backdrop-filter: var(--panel-blur);
+    color: var(--text);
+    font-size: 11px;
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .15s ease, transform .15s ease;
+}
+.rail-btn:hover .rb-label,
+.rail-btn:focus-visible .rb-label {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+}
 .rail-btn:hover { color: var(--text); background: rgba(255, 255, 255, 0.06); }
 .rail-btn.active {
     color: #fff;
@@ -656,48 +746,27 @@ button {
     box-shadow: 0 8px 20px rgba(37, 99, 235, 0.4);
 }
 
-/* ---------- 底部状态栏 ---------- */
-#bottomBar {
-    position: absolute;
-    left: 50%; bottom: 14px;
-    transform: translateX(-50%);
-    max-width: calc(100vw - 400px);
-    display: flex;
-    align-items: center;
-    gap: 16px;
-    padding: 8px 16px;
-    background: var(--bg-panel);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-lg);
-    backdrop-filter: var(--panel-blur);
-    box-shadow: var(--shadow);
-    overflow-x: auto;
-    overflow-y: hidden;
-    z-index: 23;
-}
-#bottomBar::-webkit-scrollbar { height: 4px; }
-#bottomBar::-webkit-scrollbar-thumb { background: rgba(148, 163, 184, 0.25); border-radius: 2px; }
-
-.stat-group { display: flex; gap: 14px; flex-shrink: 0; }
+/* ---------- 状态栏指标（底部状态条） ---------- */
+.stat-group { display: flex; align-items: center; gap: 11px; flex-shrink: 0; }
 .stat-group + .stat-group {
-    padding-left: 16px;
+    padding-left: 11px;
     border-left: 1px solid var(--border-faint);
 }
 .stat-item {
+    position: relative;
     display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 2px;
-    min-width: 56px;
-}
-.stat-label {
-    font-size: 9px;
-    color: var(--text-dim);
-    letter-spacing: .04em;
+    align-items: baseline;
+    gap: 4px;
+    min-width: 0;
     white-space: nowrap;
 }
+.stat-label {
+    font-size: 10px;
+    color: var(--text-dim);
+    letter-spacing: .02em;
+}
 .stat-value {
-    font-size: 14px;
+    font-size: 12px;
     font-weight: 700;
     color: var(--text);
     font-variant-numeric: tabular-nums;
@@ -705,6 +774,33 @@ button {
 .stat-value.pos { color: var(--green); }
 .stat-value.neg { color: var(--red); }
 .stat-value.warn { color: var(--yellow); }
+
+/* 悬停显示指标全称（与右侧图标栏的悬停标签同一套样式） */
+.stat-tip {
+    position: absolute;
+    left: 50%;
+    bottom: calc(100% + 9px);
+    transform: translate(-50%, 4px);
+    padding: 4px 9px;
+    border-radius: 7px;
+    background: var(--bg-panel);
+    border: 1px solid var(--border);
+    box-shadow: var(--shadow-soft);
+    backdrop-filter: var(--panel-blur);
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity .12s ease, transform .12s ease;
+    z-index: 2;
+}
+.stat-item:hover .stat-tip,
+.stat-item:focus-visible .stat-tip {
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
 .stat-bar {
     width: 40px; height: 3px;
     background: rgba(255, 255, 255, 0.08);
@@ -1233,6 +1329,17 @@ button {
     .start-decor { width: 78vw; right: -22%; opacity: .55; }
 }
 
+/* 中等宽度：状态条放不下时改为横向滚动，悬停气泡让位 */
+@media (max-width: 1300px) {
+    #statBar {
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+    }
+    #statBar::-webkit-scrollbar { display: none; }
+    .stat-tip { display: none; }
+}
+
 @media (max-width: 720px) {
     :root {
         --topbar-h: 44px;
@@ -1253,14 +1360,40 @@ button {
     .mb-icon { width: 34px; height: 34px; border-radius: 10px; font-size: 14px; }
     .country-list { grid-template-columns: repeat(2, 1fr); }
 
-    /* 顶栏三个浮层收紧 */
+    /* 顶栏两个浮层收紧；窄屏放不下三块，改成两行：
+       第一行 国家 + 右侧按钮，第二行 日期/速度 */
     #topBar { top: 8px; left: 8px; right: 8px; gap: 6px; }
+    .top-main {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: stretch;
+        gap: 6px;
+    }
+    .top-left { order: 1; }
+    .top-right { order: 2; margin-left: auto; }
+    .top-center {
+        order: 3;
+        flex: 0 0 100%;
+        justify-content: center;
+    }
     .top-left, .top-center, .top-right {
         min-height: 40px;
         padding: 5px 9px;
         border-radius: 13px;
         gap: 6px;
     }
+    /* 状态条沉到导航栏上方，横向滚动 */
+    #statBar {
+        left: 8px; right: 8px; bottom: 72px;
+        max-width: none;
+        padding: 5px 10px;
+        gap: 10px;
+        border-radius: 13px;
+        overflow-x: auto;
+        overflow-y: hidden;
+        scrollbar-width: none;
+    }
+    #statBar::-webkit-scrollbar { display: none; }
     .country-name { font-size: 12px; max-width: 120px; }
     .date-display { font-size: 13px; }
     .speed-controls { padding: 3px 5px; gap: 4px; }
@@ -1269,13 +1402,13 @@ button {
     .speed-btn .sb-num { font-size: 8px; }
     .top-btn { padding: 6px 11px; font-size: 12px; }
 
-    /* 工具栏下移到顶栏之下 */
-    .map-tools { top: 66px; left: 8px; padding: 4px; border-radius: 13px; }
+    /* 工具栏下移到顶栏之下（顶栏在窄屏为两行） */
+    .map-tools { top: 118px; left: 8px; padding: 4px; border-radius: 13px; }
     .tool-btn { width: 32px; height: 32px; border-radius: 9px; font-size: 13px; }
 
     /* 导航栏改为底部横向浮层 */
     #iconRail {
-        top: auto; bottom: 74px;
+        top: auto; bottom: 8px;
         left: 8px; right: 8px;
         transform: none;
         flex-direction: row;
@@ -1292,30 +1425,41 @@ button {
         font-size: 15px;
         gap: 2px;
     }
-    .rail-btn .rb-label { font-size: 8px; }
+    /* 触屏没有悬停：标签恢复为按钮内的常显小字 */
+    .rail-btn .rb-label {
+        position: static;
+        transform: none;
+        opacity: 1;
+        padding: 0;
+        border: 0;
+        background: none;
+        box-shadow: none;
+        backdrop-filter: none;
+        font-size: 8px;
+        font-weight: 400;
+        line-height: 1;
+    }
     .rail-btn.active::before { display: none; }
 
-    /* 底部状态栏 */
-    #bottomBar {
-        left: 8px; right: 8px; bottom: 8px;
-        transform: none;
-        max-width: none;
-        gap: 12px;
-        padding: 7px 12px;
-        border-radius: var(--radius);
-    }
-    .stat-group { gap: 12px; }
-    .stat-group + .stat-group { padding-left: 12px; }
-    .stat-item { min-width: 48px; }
-    .stat-value { font-size: 12px; }
-    .stat-label { font-size: 8px; }
+    .stat-group { gap: 10px; }
+    .stat-group + .stat-group { padding-left: 10px; }
+    .stat-item { gap: 4px; }
+    .stat-value { font-size: 11px; }
+    .stat-label { font-size: 9px; }
 
     #minimapContainer {
         width: 112px; height: 56px;
-        bottom: 136px; right: 8px;
+        bottom: 106px; right: 8px;
         border-radius: 11px;
     }
     .map-hint { display: none; }
+    .map-legend {
+        left: 8px; bottom: 106px;
+        max-width: calc(100vw - 140px);
+        padding: 5px 10px;
+        border-radius: 13px;
+        font-size: 10px;
+    }
 
     /* 面板变为底部抽屉 */
     #panelModal {
@@ -1334,14 +1478,14 @@ button {
     .modal-box { padding: 22px; max-width: 100%; }
     .event-box { padding: 22px; }
 
-    /* 省份速览卡避开底部导航与状态栏 */
+    /* 省份速览卡避开底部导航与小地图 */
     .province-card {
         left: 8px; right: 8px;
         width: auto;
-        bottom: 200px;
+        bottom: 170px;
         max-height: 38vh;
     }
-    .toast { bottom: 142px; }
+    .toast { bottom: 106px; }
 }
 
 @media (max-width: 560px) {
@@ -1360,6 +1504,15 @@ button {
     .stat-group + .stat-group { padding-left: 8px; }
     .rail-btn .rb-label { display: none; }
     .rail-btn { height: 40px; }
+    /* 手机宽度下 8 个速度按钮再收窄，避免日期行溢出 */
+    .speed-controls { gap: 2px; }
+    .speed-btn { width: 22px; }
+}
+
+/* 矮屏笔记本：收紧右侧导航，避免整条栏碰到底部小地图 */
+@media (max-height: 720px) and (min-width: 721px) {
+    #iconRail { gap: 2px; padding: 5px; }
+    .rail-btn { width: 34px; height: 34px; border-radius: 10px; font-size: 14px; }
 }
 
 /* ============================================================
@@ -1371,7 +1524,7 @@ html[data-theme="light"] {
     color-scheme: light;
     --bg-deep:   #eef3f9;
     --bg-base:   #e7eef7;
-    --bg-panel:  rgba(255, 255, 255, 0.86);
+    --bg-panel:  rgba(255, 255, 255, 0.92);
     --bg-elev:   rgba(255, 255, 255, 0.72);
     --bg-hover:  rgba(37, 99, 235, 0.08);
     --bg-inset:  #dfe9f3;
@@ -1455,7 +1608,16 @@ html[data-theme="light"] .tool-btn:hover,
 html[data-theme="light"] .rail-btn:hover { background: rgba(15, 23, 42, 0.06); }
 html[data-theme="light"] #minimapContainer { background: rgba(255, 255, 255, 0.84); }
 html[data-theme="light"] .stat-bar { background: rgba(15, 23, 42, 0.09); }
-html[data-theme="light"] #bottomBar::-webkit-scrollbar-thumb { background: rgba(15, 23, 42, 0.2); }
+/* 「已暂停」等提示在浅色底上需要更深的文字色 */
+html[data-theme="light"] .pause-hint {
+    color: #92400e;
+    background: rgba(180, 83, 9, 0.10);
+    border-color: rgba(180, 83, 9, 0.30);
+}
+html[data-theme="light"] .rail-btn .rb-label {
+    background: #ffffff;
+    box-shadow: 0 6px 18px rgba(30, 58, 95, 0.16);
+}
 
 /* 滑入式面板 */
 html[data-theme="light"] #panelModal {
@@ -1531,25 +1693,5 @@ html[data-theme="light"] #tooltip {
         height: 38px;
         border-radius: 12px;
         font-size: 16px;
-    }
-
-    /* 手机上顶栏空间有限：把主题按钮移到地图右上角，单独浮起，
-       顶栏右侧只保留「菜单」，避免文字换行。 */
-    .top-right .theme-toggle {
-        position: absolute;
-        top: 58px;
-        right: 0;
-        width: 38px;
-        height: 38px;
-        border-radius: 13px;
-        background: var(--bg-panel);
-        border: 1px solid var(--border);
-        backdrop-filter: var(--panel-blur);
-        box-shadow: var(--shadow-soft);
-        font-size: 16px;
-        z-index: 25;
-    }
-    html[data-theme="light"] .top-right .theme-toggle {
-        background: rgba(255, 255, 255, 0.86);
     }
 }

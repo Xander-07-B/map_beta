@@ -72,12 +72,12 @@ const MapView = {
             armyTextColor: '#ffffff',
         },
         light: {
-            oceanColor: '#cbdff0',
-            landColor: '#e9eef5',
-            countryBorderColor: 'rgba(51,65,85,0.55)',
-            provinceBorderColor: 'rgba(100,116,139,0.42)',
+            oceanColor: '#d3e4f2',
+            landColor: '#eef2f7',
+            countryBorderColor: 'rgba(51,65,85,0.42)',
+            provinceBorderColor: 'rgba(100,116,139,0.32)',
             coastGlowColor: 'rgba(255,255,255,0.8)',
-            coastColor: 'rgba(71,85,105,0.8)',
+            coastColor: 'rgba(71,85,105,0.72)',
             hoverStrokeColor: 'rgba(15,23,42,0.85)',
             selectedStrokeColor: '#b07d2b',
             miniViewportColor: '#b07d2b',
@@ -85,6 +85,22 @@ const MapView = {
         },
     },
     theme: 'dark',
+
+    // 地形视图配色：两边主题各一套，保证在海洋底色上可区分
+    TERRAIN_COLORS: {
+        dark: {
+            plains: '#4a6d41', forest: '#2f5740', hills: '#6f6a3a',
+            mountain: '#645a52', desert: '#8f7443', tundra: '#5d7b85',
+        },
+        light: {
+            plains: '#b6d39a', forest: '#93c2a2', hills: '#d3c98b',
+            mountain: '#c2b5a8', desert: '#e8cf9c', tundra: '#c3dbe3',
+        },
+    },
+    TERRAIN_LABELS: [
+        ['plains', '平原'], ['forest', '森林'], ['hills', '丘陵'],
+        ['mountain', '山地'], ['desert', '沙漠'], ['tundra', '苔原'],
+    ],
 
     // === 填充缓存（颜色 × 空间网格，只绘制视口覆盖的格子）===
     _fillCaches: {},         // layerKey -> { version, cells, cols, rows, ... }
@@ -102,6 +118,7 @@ const MapView = {
     _countryBaseTimer: 0,    // 交互结束后重建高清底图的定时器
     _countryBaseForce: false,
     _fillColorCache: new Map(), // 浅色主题下国家填充色的提亮结果缓存
+    _frontBorderCache: null,    // 前线视图：本国边境省份 id 缓存
 
     // === 拾取网格 ===
     grid: { cols: 0, rows: 0, cells: {} },
@@ -482,7 +499,41 @@ const MapView = {
     // 归属变化时调用（如战斗占领），让填充缓存失效并触发重绘
     invalidateFills() {
         this._ownerVersion++;
+        this._frontBorderCache = null;
         this.requestDraw();
+    },
+
+    // 切换地图视图：move 选择 / front 前线 / terrain 地形 / province 省份
+    setTool(tool) {
+        tool = tool || 'move';
+        if (this.tool === tool) return;
+        this.tool = tool;
+        // 填充与整屏底图都按视图着色，需要整体重建
+        this._fillCaches = {};
+        this._countryBaseKey = '';
+        this._countryBaseForce = true;
+        if (this.ready) this.requestDraw();
+    },
+
+    terrainColor(terrain) {
+        const palette = this.TERRAIN_COLORS[this.theme === 'light' ? 'light' : 'dark'];
+        return palette[terrain] || palette.plains;
+    },
+
+    terrainLegend() {
+        return this.TERRAIN_LABELS.map(([key, label]) => ({
+            color: this.terrainColor(key),
+            label,
+        }));
+    },
+
+    // 省份填充色：地形视图按地形，其余视图按归属国
+    provinceFillColor(id) {
+        if (this.tool === 'terrain' && this.game) {
+            const p = this.game.provinceById(id);
+            return this.terrainColor(p && p.terrain);
+        }
+        return this.provinceColor(id);
     },
 
     // 切换地图配色（深色 / 浅色）
@@ -536,9 +587,10 @@ const MapView = {
             if (!m) return color;
             h = +m[1]; s = +m[2]; l = +m[3];
         }
-        // 明度压到 54%–72%，饱和度不超过 46%
-        l = Math.max(54, Math.min(72, 58 + (l - 42) * 0.45));
-        s = Math.min(s, 46);
+        // 明度压到 60%–78%，饱和度不超过 40%：
+        // 避免浅色主题下红/绿色块过艳、与白色浮层打架
+        l = Math.max(60, Math.min(78, 63 + (l - 42) * 0.4));
+        s = Math.min(s, 40);
         return `hsl(${Math.round(h)}, ${Math.round(s)}%, ${Math.round(l)}%)`;
     },
 
@@ -559,7 +611,7 @@ const MapView = {
         for (const [id, path] of layer.paths) {
             const b = layer.bbox.get(id);
             if (!b) continue;
-            const color = this.provinceColor(id);
+            const color = this.provinceFillColor(id);
             const c0 = Math.max(0, Math.floor((b[0] - wx0) / cellW));
             const c1 = Math.min(cols - 1, Math.floor((b[2] - wx0) / cellW));
             const r0 = Math.max(0, Math.floor((b[1] - wy0) / cellH));
@@ -996,7 +1048,7 @@ const MapView = {
             this.scale, this.offsetX, this.offsetY, this.viewW, this.viewH, dpr,
             this._ownerVersion, this.oceanColor, this.landColor,
             this.countryBorderColor, this.provinceBorderColor,
-            this.coastGlowColor, this.coastColor,
+            this.coastGlowColor, this.coastColor, this.tool,
         ].join('|');
         const cache = this._countryBaseCache;
         const size = this._countryBaseSize;
@@ -1029,11 +1081,13 @@ const MapView = {
                  (view.x1 - view.x0) + pad * 2, (view.y1 - view.y0) + pad * 2);
         ctx.clip();
         this.drawFrontlines(ctx);
+        this.drawFrontOverlay(ctx);
         this.drawArmyMoveRange(ctx);
         this.drawArmies(ctx);
         this.drawAirNavy(ctx);
         if (countryMode) this.drawCountryHover(ctx);
         else this.drawHighlights(ctx);
+        this.drawProvinceLabels(ctx);
         ctx.restore();
 
         this.drawMinimap();
@@ -1098,7 +1152,16 @@ const MapView = {
                 g.fillStyle = this.landColor;
                 g.fill(this.landBasePath);
             }
-            this.drawCountryFills(g);
+            if (this.tool === 'terrain') {
+                // 地形视图在世界层级也直接铺省份地形色，
+                // 否则点按钮后要放大才看得到变化
+                this.drawProvinceFills(g, 'l0', this.layers.provL0);
+                this.drawProvinceBorders(g, 'provL0');
+            } else {
+                this.drawCountryFills(g);
+                // 省份视图：概览层级也画出全部省界
+                if (this.tool === 'province') this.drawProvinceBorders(g, 'provL0');
+            }
             this.drawCountryBorders(g);
         } else {
             // 省份层级：先铺国家底色兜底（admin-1 未覆盖的国家不会露出海洋色），
@@ -1522,20 +1585,107 @@ const MapView = {
                 ctx.stroke(path);
             }
         }
-        // 前线高亮
-        if (this.tool === 'front') {
-            const view = this.viewRect();
-            const garrisons = this.game.garrisons();
-            for (const [id] of this.paths) {
-                const b = this.bbox.get(id);
-                if (!b || !this.inView(b, view)) continue;
-                const owners = new Set(garrisons.filter(g => g.provinceId === id).map(g => g.owner));
-                if (owners.size > 1) {
-                    const path = this.paths.get(id);
-                    ctx.fillStyle = 'rgba(200,74,74,0.25)';
-                    ctx.fill(path);
+    },
+
+    /**
+     * 前线视图：永远能看出变化——先勾出本国国界与接壤邻国的边境省份，
+     * 真正开战时再由 drawFrontlines 叠加红色动态前线。
+     */
+    drawFrontOverlay(ctx) {
+        if (this.tool !== 'front' || !this.game) return;
+        const game = this.game;
+        const playerTag = game.playerTag;
+        const iso = this.playerIso();
+        if (!playerTag || !iso) return;
+        const view = this.viewRect();
+
+        // 本国国界（世界层级也能看见）
+        const countryPath = this.layers.country.paths.get(iso);
+        if (countryPath) {
+            ctx.lineJoin = ctx.lineCap = 'round';
+            ctx.strokeStyle = this.theme === 'light' ? 'rgba(120,53,15,0.45)' : 'rgba(0,0,0,0.55)';
+            ctx.lineWidth = 5.5 / this.scale;
+            ctx.stroke(countryPath);
+            ctx.strokeStyle = '#f97316';
+            ctx.lineWidth = 2.6 / this.scale;
+            ctx.stroke(countryPath);
+        }
+
+        // 与外国接壤的本国省份：橙色淡染 + 描边（省界层级才有意义）
+        if (this.scale < this.LOD_COUNTRY) return;
+        for (const id of this.playerBorderProvinces()) {
+            const path = this.paths.get(id);
+            const b = this.bbox.get(id);
+            if (!path || !b || !this.inView(b, view)) continue;
+            ctx.fillStyle = 'rgba(249, 115, 22, 0.18)';
+            ctx.fill(path);
+            ctx.strokeStyle = 'rgba(249, 115, 22, 0.95)';
+            ctx.lineWidth = 2 / this.scale;
+            ctx.stroke(path);
+        }
+    },
+
+    playerIso() {
+        const tag = this.game && this.game.playerTag;
+        if (!tag) return null;
+        return this.game.isoOfTag ? this.game.isoOfTag(tag) : tag;
+    },
+
+    // 本国与外国接壤的省份 id（按归属版本缓存，占领变化时失效）
+    playerBorderProvinces() {
+        const iso = this.playerIso();
+        if (!iso) return [];
+        const cache = this._frontBorderCache;
+        if (cache && cache.version === this._ownerVersion && cache.iso === iso) return cache.ids;
+
+        const meta = this.index && this.index.meta;
+        const neighbors = this.index && this.index.neighbors;
+        const ids = [];
+        if (meta && neighbors) {
+            for (const key of Object.keys(meta)) {
+                const m = meta[key];
+                if (!m || m.owner !== iso) continue;
+                const ns = neighbors[key];
+                if (!ns) continue;
+                if (ns.some(n => meta[n] && meta[n].owner && meta[n].owner !== iso)) {
+                    ids.push(Number(key));
                 }
             }
+        }
+        this._frontBorderCache = { version: this._ownerVersion, iso, ids };
+        return ids;
+    },
+
+    // 省份视图：在省界之上标注省名（只画屏幕面积足够大的省份，最多 160 个）
+    drawProvinceLabels(ctx) {
+        if (this.tool !== 'province' || this.scale < this.LOD_COUNTRY * 1.5) return;
+        const meta = this.index && this.index.meta;
+        if (!meta) return;
+        const view = this.viewRect();
+        const labels = [];
+        for (const [id, b] of this.bbox) {
+            if (!this.inView(b, view)) continue;
+            const w = (b[2] - b[0]) * this.scale;
+            if (w < 34) continue;
+            labels.push({ id, x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2, w });
+        }
+        if (labels.length === 0) return;
+        labels.sort((a, b) => b.w - a.w);
+        if (labels.length > 160) labels.length = 160;
+
+        const fs = 10 / this.scale;
+        ctx.font = `600 ${fs}px "Microsoft YaHei", "PingFang SC", sans-serif`;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.lineJoin = 'round';
+        ctx.lineWidth = 3 / this.scale;
+        ctx.strokeStyle = this.theme === 'light' ? 'rgba(255,255,255,0.88)' : 'rgba(6,10,17,0.78)';
+        ctx.fillStyle = this.theme === 'light' ? '#1f2f45' : '#dbe6f5';
+        for (const l of labels) {
+            const m = meta[l.id];
+            if (!m || !m.name) continue;
+            ctx.strokeText(m.name, l.x, l.y);
+            ctx.fillText(m.name, l.x, l.y);
         }
     },
 

@@ -192,7 +192,7 @@ const UI = {
         // 战斗/空战/海战可能已经打光当前选中的单位，及时清理选中态
         this.game.clearStaleSelection();
         this.updateTopBar();
-        this.updateBottomBar();
+        this.updateStatsBar();
         // 面板关闭时不要反复重建隐藏的 DOM；打开时也只在数据签名变化时重建，
         // 否则每 400ms 重建一次会销毁鼠标下的选项元素，导致 hover 样式闪烁
         const pm = document.getElementById('panelModal');
@@ -335,96 +335,109 @@ const UI = {
         });
     },
 
-    // ===================== 底部状态栏 =====================
-    updateBottomBar() {
+    // ===================== 底部状态条 =====================
+    // 紧凑显示「图标 + 简称 + 数值」，悬停浮出全称；
+    // 数值没变时跳过重建，避免 400ms 刷新打断悬停气泡。
+    updateStatsBar() {
         const tag = this.game.playerTag;
         const c = this.game.playerCountry();
-        if (!c) return;
-
-        // 资源（战役状态持有量）
         const resBox = document.getElementById('statResources');
+        if (!c || !resBox) return;
+
+        const item = (icon, short, full, value, cls = '') => `<div class="stat-item">
+            <span class="stat-label">${icon} ${short}</span>
+            <span class="stat-value ${cls}">${value}</span>
+            <span class="stat-tip">${full}</span>
+        </div>`;
+
+        // 资源（战役状态持有量）——只显示单字简称
+        const shortRes = { steel: '钢', oil: '油', rubber: '胶', aluminium: '铝', munitions: '弹', supplies: '补' };
         const topRes = ['steel', 'oil', 'rubber', 'aluminium', 'munitions', 'supplies'];
-        resBox.innerHTML = topRes.map(r => {
+        const resHtml = topRes.map(r => {
             const def = RESOURCES[r];
-            const val = c.resources?.[r] || 0;
-            return `<div class="stat-item">
-                <span class="stat-label">${def.icon} ${def.name}</span>
-                <span class="stat-value">${Math.round(val)}</span>
-            </div>`;
+            return item(def.icon, shortRes[r], def.name, Math.round(c.resources?.[r] || 0));
         }).join('');
 
         // 人力 / 战争支持 / 稳定度
-        const mpBox = document.getElementById('statManpower');
         const warSupport = Math.round(this.fp(c.warSupport) * 100);
         const stability = Math.round(this.fp(c.stability) * 100);
-        mpBox.innerHTML = `<div class="stat-item">
-            <span class="stat-label">⊕ 人力</span>
-            <span class="stat-value">${Math.round(c.manpower)}</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">▲ 战争支持</span>
-            <span class="stat-value ${warSupport > 50 ? 'pos' : 'warn'}">${warSupport}%</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">◆ 稳定度</span>
-            <span class="stat-value ${stability > 50 ? 'pos' : 'warn'}">${stability}%</span>
-        </div>`;
+        const mpHtml = [
+            item('⊕', '人', '人力', Math.round(c.manpower)),
+            item('▲', '战支', '战争支持', `${warSupport}%`, warSupport > 50 ? 'pos' : 'warn'),
+            item('◆', '稳定', '稳定度', `${stability}%`, stability > 50 ? 'pos' : 'warn'),
+        ].join('');
 
         // 工业
-        const indBox = document.getElementById('statIndustry');
-        indBox.innerHTML = `<div class="stat-item">
-            <span class="stat-label">⬢ 民用工厂</span>
-            <span class="stat-value">${c.civs}</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">⡡ 军用工厂</span>
-            <span class="stat-value">${c.mils}</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">⚓ 船坞</span>
-            <span class="stat-value">${c.docks}</span>
-        </div>`;
+        const indHtml = [
+            item('⬢', '民工', '民用工厂', c.civs),
+            item('⡡', '军工', '军用工厂', c.mils),
+            item('⚓', '船坞', '船坞', c.docks),
+        ].join('');
 
         // 军事（可指挥部队 / 空军 / 舰队 / 总兵力）
-        const milBox = document.getElementById('statMilitary');
         const myArmies = this.game.armiesOf(tag);
         const myAir = this.game.airForcesOf(tag);
         const myFleets = this.game.fleetsOf(tag);
         const totalStrength = Math.round(myArmies.reduce((sum, a) => sum + (a.strength || 0), 0));
         const war = this.game.isWarFor(tag);
         const wars = this.game.warsOf(tag).length;
-        milBox.innerHTML = `<div class="stat-item">
-            <span class="stat-label">⚔ 部队</span>
-            <span class="stat-value">${myArmies.length}</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">✈ 空军</span>
-            <span class="stat-value">${myAir.length}</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">⚓ 舰队</span>
-            <span class="stat-value">${myFleets.length}</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">▮ 总兵力</span>
-            <span class="stat-value">${totalStrength}</span>
-        </div>
-        <div class="stat-item">
-            <span class="stat-label">${war ? '● 战争中' : '○ 和平'}</span>
-            <span class="stat-value ${war ? 'neg' : 'pos'}">${war ? `${wars} 场` : '否'}</span>
-        </div>`;
+        const milHtml = [
+            item('⚔', '部队', '可指挥部队', myArmies.length),
+            item('✈', '空军', '空军', myAir.length),
+            item('⚓', '舰队', '舰队', myFleets.length),
+            item('▮', '兵力', '总兵力', totalStrength),
+            item(war ? '●' : '○', war ? '战争中' : '和平', '战争状态',
+                war ? `${wars} 场` : '否', war ? 'neg' : 'pos'),
+        ].join('');
+
+        const signature = `${tag}|${resHtml}|${mpHtml}|${indHtml}|${milHtml}`;
+        if (signature === this._statBarHtml) return;
+        this._statBarHtml = signature;
+
+        resBox.innerHTML = resHtml;
+        document.getElementById('statManpower').innerHTML = mpHtml;
+        document.getElementById('statIndustry').innerHTML = indHtml;
+        document.getElementById('statMilitary').innerHTML = milHtml;
     },
 
     bindMapTools() {
         const btns = document.querySelectorAll('.tool-btn');
         btns.forEach(btn => {
             btn.addEventListener('click', () => {
-                document.querySelectorAll('.tool-btn').forEach(b => b.classList.remove('active'));
-                btn.classList.add('active');
-                this.game.tool = btn.dataset.tool;
-                MapView.draw();
+                const tool = btn.dataset.tool || 'move';
+                btns.forEach(b => b.classList.toggle('active', b === btn));
+                this.game.tool = tool;
+                // MapView 才是真正读取 tool 的渲染方
+                if (typeof MapView !== 'undefined' && MapView.setTool) MapView.setTool(tool);
+                this.updateMapLegend();
             });
         });
+        this.updateMapLegend();
+    },
+
+    /** 地图视图图例：非默认视图时替换左下角的操作提示 */
+    updateMapLegend() {
+        const el = document.getElementById('mapLegend');
+        if (!el) return;
+        const tool = (typeof MapView !== 'undefined' && MapView.tool)
+            || (this.game && this.game.tool) || 'move';
+        let html = '';
+        if (tool === 'front') {
+            html = `<span class="lg-item"><i class="lg-dot" style="background:#f97316"></i>本国边境</span>
+                <span class="lg-item"><i class="lg-dot" style="background:#c0392b"></i>交战前线（开战后）</span>`;
+        } else if (tool === 'terrain') {
+            const legend = (typeof MapView !== 'undefined' && MapView.terrainLegend)
+                ? MapView.terrainLegend() : [];
+            html = legend.map(x =>
+                `<span class="lg-item"><i class="lg-dot" style="background:${x.color}"></i>${x.label}</span>`
+            ).join('');
+        } else if (tool === 'province') {
+            html = '<span class="lg-item">省界 · 放大后显示省名</span>';
+        }
+        el.innerHTML = html;
+        el.classList.toggle('hidden', !html);
+        const hint = document.querySelector('.map-hint');
+        if (hint) hint.classList.toggle('hidden', !!html);
     },
 
     bindTopBar() {
