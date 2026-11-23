@@ -26,7 +26,7 @@
       "warSupport": 0.60,
       "legitimacy": 0.70,
       "resources": { "oil": 10, "steel": 40, "aluminium": 5 },
-      "equipment": { "infantry_weapon": 40, "artillery": 12 },
+      "equipment": { "infantry_weapon": 40, "artillery": 12, "fighter": 40, "destroyer": 9 },
       "civs": 20,
       "mils": 12,
       "docks": 4,
@@ -35,8 +35,10 @@
       "researchSlots": 3,
       "research": { "inf_weapons_1": 0 },
       "relations": { "POL": -20, "FRA": -10 },
-      "faction": null,
-      "unlockedTemplates": ["infantry"]
+      "faction": "axis",
+      "unlockedTemplates": ["infantry"],
+      "unlockedAir": ["fighter", "tactical"],
+      "unlockedShips": ["destroyer"]
     },
     "POL": {
       "name": "l10n.country.POL",
@@ -51,13 +53,14 @@
       "warSupport": 0.50,
       "legitimacy": 0.60,
       "resources": { "steel": 12, "oil": 3 },
-      "equipment": { "infantry_weapon": 24, "artillery": 6 },
+      "equipment": { "infantry_weapon": 24, "artillery": 6, "fighter": 20 },
       "civs": 14,
       "mils": 8,
       "docks": 1,
       "relations": { "GER": -20 },
       "faction": null,
-      "unlockedTemplates": ["infantry"]
+      "unlockedTemplates": ["infantry"],
+      "unlockedAir": ["fighter"]
     },
     "FRA": {
       "name": "l10n.country.FRA",
@@ -72,13 +75,15 @@
       "warSupport": 0.55,
       "legitimacy": 0.65,
       "resources": { "steel": 22, "aluminium": 6 },
-      "equipment": { "infantry_weapon": 32, "artillery": 10 },
+      "equipment": { "infantry_weapon": 32, "artillery": 10, "fighter": 30, "destroyer": 6 },
       "civs": 22,
       "mils": 10,
       "docks": 3,
       "relations": { "GER": -10 },
-      "faction": null,
-      "unlockedTemplates": ["infantry"]
+      "faction": "league",
+      "unlockedTemplates": ["infantry"],
+      "unlockedAir": ["fighter"],
+      "unlockedShips": ["destroyer"]
     }
   },
   "provinces": [
@@ -121,6 +126,18 @@
     { "country": "GER", "province": 1159310973, "template": "infantry", "count": 18 },
     { "country": "POL", "province": 1159314695, "template": "infantry", "count": 16 },
     { "country": "POL", "province": 1159314685, "template": "infantry", "count": 12 }
+  ],
+  "initialAirForces": [
+    { "country": "GER", "province": 1159312769, "template": "fighter", "count": 1 },
+    { "country": "GER", "province": 1159312769, "template": "tactical", "count": 1 },
+    { "country": "POL", "province": 1159314695, "template": "fighter", "count": 1 }
+  ],
+  "initialFleets": [
+    { "country": "GER", "province": 1159310985, "template": "destroyer", "count": 1 }
+  ],
+  "alliances": [
+    { "id": "axis", "name": "l10n.faction.axis", "members": ["GER", "ITA"] },
+    { "id": "league", "name": "l10n.faction.league", "members": ["FRA", "GBR"] }
   ],
   "wars": [],
   "events": { "enabled": ["danzig_demand"] },

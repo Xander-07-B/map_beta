@@ -900,6 +900,37 @@ button {
     color: #fff;
 }
 .btn-action:disabled { opacity: .35; cursor: not-allowed; }
+.btn-action.on {
+    background: rgba(34, 197, 94, 0.22);
+    border-color: rgba(34, 197, 94, 0.6);
+    color: #bbf7d0;
+}
+.btn-action.mini { padding: 3px 9px; font-size: 11px; margin: 0 3px 3px 0; }
+
+/* 部队指令行 */
+.order-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    margin: 8px 0 12px;
+}
+.order-row .or-label { font-size: 11px; color: var(--text-dim); }
+.order-row .btn-action { margin: 0; }
+
+/* 通知筛选行 */
+.filter-row { display: flex; flex-wrap: wrap; gap: 6px; }
+.filter-row .btn-action { margin: 0; }
+
+/* 模态框内的长列表滚动区 */
+.modal-scroll { max-height: 52vh; overflow-y: auto; }
+.modal-scroll .diplo-card + .diplo-card { margin-top: 8px; }
+
+/* 生产线暂停态 */
+.prod-row.disabled { opacity: .45; }
+
+/* 我方部队卡片（情报面板） */
+.army-card.mine { border-left: 3px solid rgba(34, 197, 94, 0.7); }
 
 /* 外交卡片 */
 .diplo-card {

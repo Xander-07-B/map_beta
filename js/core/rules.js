@@ -5,11 +5,15 @@
  * 效果（effects）是命令的宏：展开为 Command 走统一入口，保证日志完整。
  * ============================================================ */
 
-import { applyCommand } from './commands.js';
+import { applyCommand, registerDiplomacyHook } from './commands.js';
 import { recomputeVictoryPoints, clearAtWar } from './state.js';
 import { FP_SCALE, fpAddClamp01, orderedKeys } from './determinism.js';
 import { formatDate, parseDate, TICK_GAME_DAYS } from './clock.js';
 import { installWarRules } from './war.js';
+import {
+    installDiplomacyRules,
+    validateDiplomacyCommand, executeDiplomacyCommand,
+} from './diplomacy.js';
 
 export const RULES = {};
 
@@ -172,6 +176,9 @@ export function installCoreRules() {
 
     // 军事规则（战斗 / 占领）与经济、政治规则同源注册
     installWarRules(registerRule);
+    // 外交规则（阵营战争、和平会议）与外交命令的校验/执行挂载
+    registerDiplomacyHook({ validate: validateDiplomacyCommand, execute: executeDiplomacyCommand });
+    installDiplomacyRules(registerRule);
 
     // 州归属变更 → 州内省份控制方同步转移 → 重算 VP → 任务重估 → 胜负重判
     registerRule('ownerChanged', ({ state, to, reason }, s, ctx) => {
@@ -191,9 +198,10 @@ export function installCoreRules() {
         enqueue(s, 'missionEval', {});
     });
 
-    // 战争开始 → 历史记录 → 任务重估
+    // 战争开始 → 阵营成员卷入 → 历史记录 → 任务重估
     registerRule('warStarted', ({ a, b }, s) => {
         pushHistory(s, `${a} 对 ${b} 宣战，战争状态开始`);
+        enqueue(s, 'warExpandFaction', { a, b });
         enqueue(s, 'missionEval', {});
     });
 

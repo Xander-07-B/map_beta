@@ -5,7 +5,7 @@
  * ============================================================ */
 
 const IDEOLOGIES = ['fascist', 'communist', 'democratic', 'neutral'];
-const TERRAINS = ['plains', 'hills', 'mountain', 'forest', 'desert', 'sea'];
+const TERRAINS = ['plains', 'plain', 'hills', 'mountain', 'forest', 'desert', 'tundra', 'sea', 'ocean', 'coast'];
 
 /**
  * 校验剧本结构。返回问题列表（空数组 = 通过）。

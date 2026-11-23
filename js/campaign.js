@@ -14,6 +14,12 @@ import { evalTrigger } from './content/conditions.js';
 import { loadScenario } from './content/loader.js';
 import { settleEconomy } from './core/economy.js';
 import { settleWar } from './core/war.js';
+import { computeSupplyAccess, settleAirNavy, settleArmyOrders } from './core/airnavy.js';
+import {
+    migrateSave, buildIncrementalSave, resolveIncrementalSave, SAVE_VERSION,
+} from './core/save.js';
+import { applyPeaceTerms } from './core/diplomacy.js';
+import { TICKS_PER_MONTH } from './core/clock.js';
 import { runAITick } from './core/ai.js';
 
 export class Campaign {
@@ -31,6 +37,8 @@ export class Campaign {
             equipment: loaded.equipment,
             techs: loaded.techs,
             divisions: loaded.divisions,
+            aircraft: loaded.aircraft,
+            ships: loaded.ships,
         };
         this.seed = opts.seed ?? 0x1936;
         this.rng = new Rng(this.seed);
@@ -39,7 +47,13 @@ export class Campaign {
         this.state = null;
         this._listeners = {};
         this._mapIndex = null;   // 地图索引（邻接表），由渲染层注入，供部队移动判定
+        this._supply = null;     // 本 tick 的补给网络（Map<provinceId, 系数>），不进存档
+        this._base = null;       // 增量存档的基线快照
+        this._lastAutosave = 0;  // 上次自动存档的 tick
+        this.storage = opts.storage || null;   // 存档读写接口（模拟层不直接碰 localStorage）
+        this.autosaveEnabled = opts.autosave !== false;
         this.aiEnabled = false;  // AI 决策开关（AI-only 模式 / 压测）
+        this.lastAirNavy = null; // 最近一次空中/海上结算结果（供面板展示）
     }
 
     /** 开关 AI 决策（所有非玩家国家由 AI 接管） */
@@ -68,6 +82,8 @@ export class Campaign {
             seed: this.seed,
             rng: this.rng,
             divisions: this.content.divisions,
+            aircraft: this.content.aircraft,
+            ships: this.content.ships,
         });
         this.clock.tick = 0;
         this.clock.acc = 0;
@@ -84,10 +100,14 @@ export class Campaign {
             equipment: this.content.equipment,
             techs: this.content.techs,
             divisions: this.content.divisions,
+            aircraft: this.content.aircraft,
+            ships: this.content.ships,
             neighbors: this._mapIndex?.neighbors || null,
             scenario: this.scenario,
             applyEffects,
+            applyPeaceTerms,
             strict: true,
+            supply: this._supply || null,
             onChange: (cmd) => this.emit('command', { cmd, state: this.state }),
         };
     }
@@ -98,6 +118,7 @@ export class Campaign {
     onTick(tick) {
         const s = this.state;
         s.tick = tick;
+        const ctx = this.ctx();
 
         // 每 tick：国策进度推进
         this.advanceFocuses();
@@ -105,11 +126,21 @@ export class Campaign {
         // 每 tick = 1 游戏日：政治/经济/军事日结算
         this.dailySettlement();
 
-        // 经济结算（资源 / 生产线 / 建造 / 科研 / 人力 / 政治点数）
-        this.lastEconomy = settleEconomy(s, this.ctx());
+        // 补给网络：经济（补给消耗）与军事（组织度维持）共用同一份可达性
+        this._supply = computeSupplyAccess(s, ctx);
+        ctx.supply = this._supply;
 
-        // 军事结算（战斗 / 占领 / 州归属翻转 / 战争分数）
-        this.lastWar = settleWar(s, this.ctx());
+        // 经济结算（资源 / 生产线 / 建造 / 科研 / 人力 / 政治点数）
+        this.lastEconomy = settleEconomy(s, ctx);
+
+        // 军事结算（战斗 / 占领 / 部队维持 / 州归属翻转 / 战争分数）
+        this.lastWar = settleWar(s, ctx);
+
+        // 空中与海上结算（空战 / 海战 / 轰炸）+ 部队指令（进攻 / 撤退）
+        this.lastAirNavy = {
+            ...settleAirNavy(s, ctx),
+            ...settleArmyOrders(s, ctx),
+        };
 
         // 月界（每 30 tick = 30 游戏日）：任务/胜负月度评估 + AI 决策
         if (this.clock.isMonthStart) {
@@ -118,13 +149,45 @@ export class Campaign {
         }
 
         // 排空规则级联队列
-        drainPending(s, this.ctx());
+        drainPending(s, ctx);
+
+        // 和平会议：玩家是败方时弹出和平条件窗口
+        if (ctx.pendingPeace != null) {
+            const offer = s.peaceOffers.find((o) => o.id === ctx.pendingPeace);
+            ctx.pendingPeace = null;
+            if (offer) this.emit('peace', { offer, state: s });
+        }
 
         if (s.victory) {
             this.clock.setSpeed(0);
             this.emit('victory', { state: s, victory: s.victory });
         }
         this.emit('tick', { tick, state: s });
+
+        // 每月自动存档（写入独立存档位，不覆盖玩家手动存档）
+        this.maybeAutosave();
+    }
+
+    /** 到达月界时自动存档；返回是否写入了存档 */
+    maybeAutosave() {
+        if (!this.autosaveEnabled || !this.storage || !this.state) return false;
+        if (this.state.tick - this._lastAutosave < TICKS_PER_MONTH) return false;
+        this._lastAutosave = this.state.tick;
+        const data = this.saveAuto();
+        return !!data;
+    }
+
+    /** 存档元信息（全量与增量存档共用） */
+    saveMeta() {
+        return {
+            version: SAVE_VERSION,
+            scenarioId: this.scenario.id,
+            mapVersion: this.scenario.map,
+            seed: this.seed,
+            tick: this.clock.tick,
+            derivedFrom: this.derivedFrom,
+            date: formatDate(this.clock.date),
+        };
     }
 
     /**
@@ -193,31 +256,77 @@ export class Campaign {
     // ===================== 存档 / 回放 =====================
 
     /** 存档：全量快照 + 命令日志（后续可换二进制序列化） */
+    /** 全量存档：整份状态快照 + 命令日志 */
     save() {
         const s = this.state;
         s.rngState = this.rng.getState();   // RNG 状态必须进存档
         s.tick = this.clock.tick;
-        return {
-            meta: {
-                version: 3,
-                scenarioId: this.scenario.id,
-                mapVersion: this.scenario.map,
-                seed: this.seed,
-                tick: this.clock.tick,
-                derivedFrom: this.derivedFrom,
-                date: formatDate(this.clock.date),
-            },
-            snapshot: cloneState(s),
+        const snapshot = cloneState(s);
+        const data = {
+            meta: this.saveMeta(),
+            snapshot,
             commands: s.log.slice(),
         };
+        this._base = { snapshot, commands: data.commands };
+        return data;
+    }
+
+    /**
+     * 增量存档：以基线快照为基准，只保存变化字段。
+     * 补丁过大或间隔过久时自动把当前状态提升为新基线（此时等价于全量存档）。
+     */
+    saveIncremental() {
+        const s = this.state;
+        s.rngState = this.rng.getState();
+        s.tick = this.clock.tick;
+        const base = this._base || this.save();
+        const data = buildIncrementalSave({
+            meta: this.saveMeta(),
+            baseSnapshot: base.snapshot,
+            baseCommands: base.commands,
+            state: s,
+            commands: s.log.slice(),
+        });
+        if (!data.meta.incremental) {
+            // 已提升为新基线：记住它，后续增量以它为基准
+            this._base = data.base;
+        }
+        return data;
+    }
+
+    /** 自动存档：写入独立存档位（不覆盖玩家手动存档） */
+    saveAuto() {
+        if (!this.storage) return null;
+        const data = this.saveIncremental();
+        try {
+            this.storage.write('hoi4_campaign_autosave', JSON.stringify(data));
+            return data;
+        } catch {
+            return null;
+        }
+    }
+
+    /** 读取自动存档 */
+    loadAuto() {
+        if (!this.storage) return null;
+        try {
+            const raw = this.storage.read('hoi4_campaign_autosave');
+            return raw ? JSON.parse(raw) : null;
+        } catch {
+            return null;
+        }
     }
 
     /** 从存档恢复（快照即全量状态，命令日志保留用于回放） */
     restore(saveData) {
-        this.rng = new Rng(saveData.meta.seed ?? this.seed);
-        this.rng.loadState(saveData.snapshot.rngState);
-        this.state = cloneState(saveData.snapshot);
-        this.clock.restore({ tick: saveData.snapshot.tick, startDate: this.scenario.startDate, speed: 0 });
+        // 增量存档先还原成完整存档，再走版本迁移（保证老存档字段补齐）
+        const data = migrateSave(resolveIncrementalSave(saveData));
+        this.rng = new Rng(data.meta.seed ?? this.seed);
+        this.rng.loadState(data.snapshot.rngState);
+        this.state = cloneState(data.snapshot);
+        this.clock.restore({ tick: data.snapshot.tick, startDate: this.scenario.startDate, speed: 0 });
+        this._base = { snapshot: cloneState(data.snapshot), commands: data.commands || [] };
+        this._lastAutosave = this.state.tick;
         installCoreRules();
         return this.state;
     }

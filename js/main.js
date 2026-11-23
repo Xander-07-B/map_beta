@@ -15,6 +15,7 @@ const App = {
         this.initTheme();
         this.bindStartScreen();
         this.bindAIToggle();
+        this.setupShortcuts();
         if (Game.hasSave()) {
             document.getElementById('btnContinue').disabled = false;
         }
@@ -36,6 +37,39 @@ const App = {
             sync();
         });
         sync();
+    },
+
+    // ===================== 键盘快捷键 =====================
+    /**
+     * 空格暂停/继续，Esc 关闭面板或取消选中，1-9 / 0 切换面板。
+     * 输入控件内不拦截，避免影响下拉框与文本输入。
+     */
+    setupShortcuts() {
+        const PANEL_ORDER = ['overview', 'politics', 'economy', 'production', 'army',
+            'tech', 'diplomacy', 'war', 'intelligence', 'notices'];
+        window.addEventListener('keydown', (e) => {
+            const t = e.target;
+            if (t && (t.tagName === 'INPUT' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+            if (!Game.campaign) return;
+            if (!document.getElementById('gameScreen').classList.contains('active')) return;
+
+            if (e.key === 'Escape') {
+                const pm = document.getElementById('panelModal');
+                if (pm && !pm.classList.contains('hidden')) { UI.closePanel(); return; }
+                Game.clearArmySelection();
+                return;
+            }
+            if (e.key === ' ') {
+                e.preventDefault();
+                Game.speed = Game.speed > 0 ? 0 : 3;
+                UI.refreshAll();
+                return;
+            }
+            if (e.key >= '0' && e.key <= '9') {
+                const panel = PANEL_ORDER[Number(e.key) === 0 ? 9 : Number(e.key) - 1];
+                if (panel && panel !== UI.currentPanel) UI.openPanel(panel);
+            }
+        });
     },
 
     // ===================== 主题 =====================

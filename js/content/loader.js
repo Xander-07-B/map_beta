@@ -52,14 +52,18 @@ async function loadCoreContent(fetchJson, contentBase) {
         if (!raw || typeof raw !== 'object') throw new Error(`${name} 内容文件格式非法`);
         return raw;
     };
-    const [eqRaw, techRaw, divRaw] = await Promise.all([
+    const [eqRaw, techRaw, divRaw, airRaw, shipRaw] = await Promise.all([
         load('equipment.json'),
         load('techs.json'),
         load('divisions.json'),
+        load('aircraft.json'),
+        load('ships.json'),
     ]);
     const equipment = eqRaw.equipment || {};
     const techs = techRaw.techs || {};
     const divisions = divRaw.divisions || {};
+    const aircraft = airRaw.aircraft || {};
+    const ships = shipRaw.ships || {};
 
     const problems = [];
     for (const [id, eq] of Object.entries(equipment)) {
@@ -75,9 +79,30 @@ async function loadCoreContent(fetchJson, contentBase) {
         if (typeof d.baseStrength !== 'number') problems.push(`divisions.${id}.baseStrength 缺失`);
         if (!d.cost || typeof d.cost.manpower !== 'number') problems.push(`divisions.${id}.cost.manpower 缺失`);
     }
+    // 空军 / 海军：飞机与舰船是军事系统的底座，缺字段会让空中与海上结算无法进行
+    for (const [id, a] of Object.entries(aircraft)) {
+        if (!Number.isFinite(a.planes) || a.planes <= 0) problems.push(`aircraft.${id}.planes 必须为正数`);
+        if (!a.cost || typeof a.cost.equipment !== 'object' || a.cost.equipment === null) {
+            problems.push(`aircraft.${id}.cost.equipment 缺失`);
+        }
+        for (const [eqId, need] of Object.entries(a.cost.equipment || {})) {
+            if (!equipment[eqId]) problems.push(`aircraft.${id}: 引用了不存在的装备 ${eqId}`);
+            if (typeof need !== 'number' || need <= 0) problems.push(`aircraft.${id}.cost.equipment.${eqId} 必须为正数`);
+        }
+    }
+    for (const [id, s] of Object.entries(ships)) {
+        if (!Number.isFinite(s.ships) || s.ships <= 0) problems.push(`ships.${id}.ships 必须为正数`);
+        if (!s.cost || typeof s.cost.equipment !== 'object' || s.cost.equipment === null) {
+            problems.push(`ships.${id}.cost.equipment 缺失`);
+        }
+        for (const [eqId, need] of Object.entries(s.cost.equipment || {})) {
+            if (!equipment[eqId]) problems.push(`ships.${id}: 引用了不存在的装备 ${eqId}`);
+            if (typeof need !== 'number' || need <= 0) problems.push(`ships.${id}.cost.equipment.${eqId} 必须为正数`);
+        }
+    }
     if (problems.length) throw new Error(`核心内容校验失败:\n- ${problems.join('\n- ')}`);
 
-    return { equipment, techs, divisions };
+    return { equipment, techs, divisions, aircraft, ships };
 }
 
 /**

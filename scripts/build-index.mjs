@@ -43,6 +43,22 @@ const decodeArc = (i) => {
     return i < 0 ? pts.slice().reverse() : pts;
 };
 
+// 弧段引用计数：只被一个省引用的弧段就是海岸线（两个省共享的才是内陆省界），
+// 由此可以真实判定省份是否沿海——舰队部署与移动都依赖这个字段。
+const arcRefs = new Map();
+const provinceArcs = new Map();   // province id -> Set<arcIndex>
+const noteArc = (gid, ai) => {
+    const idx = ai < 0 ? ~ai : ai;
+    arcRefs.set(idx, (arcRefs.get(idx) || 0) + 1);
+    if (!provinceArcs.has(gid)) provinceArcs.set(gid, new Set());
+    provinceArcs.get(gid).add(idx);
+};
+geoms.forEach((g) => {
+    const rings = g.type === "Polygon" ? [g.arcs]
+              : g.type === "MultiPolygon" ? g.arcs : [];
+    for (const ring of rings.flat()) for (const ai of ring) noteArc(g.id, ai);
+});
+
 function bboxOf(geom) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     const rings = geom.type === "Polygon" ? [geom.arcs]
@@ -62,9 +78,13 @@ function bboxOf(geom) {
 // ③ 元数据
 const meta = {};
 let missingProps = 0;
+let coastalCount = 0;
 geoms.forEach((g) => {
     const p = propsById.get(+g.id) || {};
     if (!p.adm0_a3) missingProps++;
+    // 沿海判定：该省拥有任意一条「只被自己引用」的弧段（即海岸线）
+    const coastal = [...(provinceArcs.get(g.id) || [])].some((idx) => arcRefs.get(idx) === 1);
+    if (coastal) coastalCount++;
     meta[g.id] = {
         id: +g.id,
         name: p.name_zh || p.name || `prov${g.id}`,
@@ -73,9 +93,10 @@ geoms.forEach((g) => {
         iso: p.iso_a2 || null,
         type: p.type || null,
         scalerank: p.scalerank ?? 9,
+        coastal,
         bbox: bboxOf(g),
     };
 });
 
 writeFileSync("data/index.json", JSON.stringify({ neighbors, meta }));
-console.log(`provinces=${geoms.length}, edges=${adj.flat().length / 2}, missingProps=${missingProps}`);
+console.log(`provinces=${geoms.length}, edges=${adj.flat().length / 2}, missingProps=${missingProps}, coastal=${coastalCount}`);

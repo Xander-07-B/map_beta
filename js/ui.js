@@ -17,6 +17,8 @@ const UI = {
         this._lastPanelSignature = null;
         this._panelMouse = null;
         this._deployTarget = null;
+        this._noticeFilter = 'all';
+        this._peacePauseSpeed = 1;
         this.bindIconRail();
         this.bindMapTools();
         this.bindTopBar();
@@ -107,7 +109,7 @@ const UI = {
     panelTitles: {
         overview: '总览', politics: '政治', economy: '经济',
         production: '生产', army: '部队', tech: '科技', diplomacy: '外交',
-        intelligence: '情报', log: '日志'
+        war: '战争', intelligence: '情报', notices: '通知', log: '日志'
     },
 
     openPanel(panel) {
@@ -157,6 +159,16 @@ const UI = {
                 this.game.selectArmy(Number(armyBtn.dataset.armySelect));
                 return;
             }
+            const airBtn = target.closest('[data-air-select]');
+            if (airBtn) {
+                this.game.selectAirForce(Number(airBtn.dataset.airSelect));
+                return;
+            }
+            const fleetBtn = target.closest('[data-fleet-select]');
+            if (fleetBtn) {
+                this.game.selectFleet(Number(fleetBtn.dataset.fleetSelect));
+                return;
+            }
             const deployBtn = target.closest('[data-deploy-here]');
             if (deployBtn) {
                 const province = this.game.selectedProvince;
@@ -177,11 +189,8 @@ const UI = {
     // ===================== 主刷新 =====================
     refreshAll() {
         if (!this.game || !this.game.state) return;
-        // 战斗可能已经打光当前选中的部队，及时清理选中态
-        if (this.game.selectedArmy != null) {
-            const a = this.game.armyById(this.game.selectedArmy);
-            if (!a || a.strength <= 0) this.game.clearArmySelection();
-        }
+        // 战斗/空战/海战可能已经打光当前选中的单位，及时清理选中态
+        this.game.clearStaleSelection();
         this.updateTopBar();
         this.updateBottomBar();
         // 面板关闭时不要反复重建隐藏的 DOM；打开时也只在数据签名变化时重建，
@@ -219,6 +228,31 @@ const UI = {
     },
 
     /**
+     * 玩家全部武装力量的轻量签名（数量 + 稳定哈希）。
+     * 全量剧本下空军/舰队可能很多，面板每 400ms 刷新时不能整表序列化。
+     */
+    ownForcesSignature(tag) {
+        let n = 0;
+        let hash = 0;
+        for (const a of this.game.allArmies()) {
+            if (a.owner !== tag) continue;
+            n++;
+            hash = (hash * 31 + a.id) >>> 0;
+        }
+        for (const g of this.game.allAirForces()) {
+            if (g.owner !== tag) continue;
+            n++;
+            hash = (hash * 31 + g.id) >>> 0;
+        }
+        for (const f of this.game.allFleets()) {
+            if (f.owner !== tag) continue;
+            n++;
+            hash = (hash * 31 + f.id) >>> 0;
+        }
+        return [n, hash];
+    },
+
+    /**
      * 面板渲染内容的轻量数据签名：涵盖各面板展示的全部可变数据。
      * 签名不变说明渲染结果不变，可以跳过重建（避免悬停选项闪烁）。
      */
@@ -230,15 +264,18 @@ const UI = {
         const c = s.countries[tag];
         if (!c) return '';
         return JSON.stringify([
-            tag, g.selectedProvince, g.selectedArmy, this._deployTarget,
+            tag, g.selectedProvince, g.selectedArmy, g.selectedAir, g.selectedFleet, this._deployTarget,
             c.politicalPower, c.manpower, c.population, c.civs, c.mils, c.docks,
             c.stability, c.warSupport, c.legitimacy,
             c.resources, c.equipment, c.construction, c.production,
-            c.tech, c.unlockedTemplates, c.relations, c.garrison, c.flags, c.bonuses,
+            c.tech, c.unlockedTemplates, c.unlockedAir, c.unlockedShips,
+            c.relations, c.garrison, c.flags, c.bonuses, c.faction,
             c.activeFocus,
             s.focuses[tag], s.decisions[tag], s.research[tag],
-            this.ownedProvinceSignature(tag), s.armies, s.wars, s.alliances, s.missions,
+            this.ownedProvinceSignature(tag), this.ownForcesSignature(tag),
+            s.wars, s.alliances, s.missions, s.peaceOffers, s.factionInvites, s.lendLease,
             s.history.length, s.log.length,
+            this._noticeFilter,
         ]);
     },
 
@@ -348,15 +385,25 @@ const UI = {
             <span class="stat-value">${c.docks}</span>
         </div>`;
 
-        // 军事（可指挥部队数量 + 总兵力）
+        // 军事（可指挥部队 / 空军 / 舰队 / 总兵力）
         const milBox = document.getElementById('statMilitary');
         const myArmies = this.game.armiesOf(tag);
+        const myAir = this.game.airForcesOf(tag);
+        const myFleets = this.game.fleetsOf(tag);
         const totalStrength = Math.round(myArmies.reduce((sum, a) => sum + (a.strength || 0), 0));
         const war = this.game.isWarFor(tag);
-        const wars = this.game.state.wars.filter(w => w.a === tag || w.b === tag).length;
+        const wars = this.game.warsOf(tag).length;
         milBox.innerHTML = `<div class="stat-item">
             <span class="stat-label">⚔ 部队</span>
             <span class="stat-value">${myArmies.length}</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">✈ 空军</span>
+            <span class="stat-value">${myAir.length}</span>
+        </div>
+        <div class="stat-item">
+            <span class="stat-label">⚓ 舰队</span>
+            <span class="stat-value">${myFleets.length}</span>
         </div>
         <div class="stat-item">
             <span class="stat-label">▮ 总兵力</span>
@@ -428,7 +475,9 @@ const UI = {
             case 'army': html = this.renderArmy(); break;
             case 'tech': html = this.renderTech(); break;
             case 'diplomacy': html = this.renderDiplomacy(); break;
+            case 'war': html = this.renderWar(); break;
             case 'intelligence': html = this.renderIntelligence(); break;
+            case 'notices': html = this.renderNotices(); break;
             case 'log': html = this.renderLog(); break;
         }
         content.innerHTML = html;
@@ -583,13 +632,19 @@ const UI = {
         <div class="panel-section">
             <h4>建设队列</h4>
             ${(c.construction || []).length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">无建造项目</div>' :
-                (c.construction || []).map((b) => `
-                    <div class="panel-row">
-                        <span class="pr-label">${CONSTRUCTION[b.kind]?.name || b.kind}</span>
-                        <span class="pr-value">${Math.min(100, Math.round(b.progress || 0))}%</span>
+                (c.construction || []).map((b, i) => {
+                    const target = b.province ? this.game.provinceById(b.province)?.name
+                        : b.state ? `州 ${b.state}` : '国家';
+                    return `
+                    <div class="prod-row">
+                        <span class="prod-icon">⬢</span>
+                        <span class="prod-name">${CONSTRUCTION[b.kind]?.name || b.kind}
+                            <span style="color:var(--text-dim);font-size:11px">· ${target} · ${Math.round(b.progress || 0)}%</span></span>
+                        <button class="btn-action" data-construction-cancel="${i}" style="padding:2px 8px;margin:0">✕</button>
                     </div>
                     <div class="panel-bar"><div class="panel-bar-fill" style="width:${Math.min(100, b.progress || 0)}%;background:var(--orange)"></div></div>
-                `).join('')}
+                `;
+                }).join('')}
         </div>`;
     },
 
@@ -611,14 +666,22 @@ const UI = {
                 const eq = equipment[item.equipment];
                 const canDown = (item.factories || 1) > 1;
                 const canUp = (item.factories || 1) < (c.mils || 0);
-                return `<div class="prod-row">
+                const produced = Math.floor(item.produced || 0);
+                const frac = (item.progress || 0);
+                return `<div class="prod-row ${item.disabled ? 'disabled' : ''}">
                     <span class="prod-icon">${eq ? eq.icon : '▢'}</span>
                     <span class="prod-name">${eq ? eq.name : item.equipment}
-                        <span style="color:var(--text-dim);font-size:11px">· ${item.factories || 1} 厂</span></span>
+                        <span style="color:var(--text-dim);font-size:11px">· ${item.factories || 1} 厂
+                            · 已生产 ${produced}${frac > 0 ? `（进行中 ${frac.toFixed(2)}）` : ''}</span></span>
                     <button class="btn-action" data-prod-adj="${i}" data-delta="-1" ${canDown ? '' : 'disabled'}>−</button>
                     <button class="btn-action" data-prod-adj="${i}" data-delta="1" ${canUp ? '' : 'disabled'}>+</button>
+                    <button class="btn-action" data-prod-toggle="${i}" title="暂停 / 恢复该产线">
+                        ${item.disabled ? '启用' : '暂停'}</button>
                     <button class="btn-action" data-prod-remove="${i}" style="padding:2px 8px;margin:0">✕</button>
-                </div>`;
+                </div>
+                ${item.disabled ? '' : `<div class="panel-bar"><div class="panel-bar-fill"
+                    style="width:${Math.min(100, (item.progress || 0) * 20)}%;background:var(--green)"></div></div>`}
+                `;
             }).join('')}
         </div>
         <div class="panel-section">
@@ -691,10 +754,155 @@ const UI = {
                 <span>已选中 ${divisions[selectedArmy.template]?.name || selectedArmy.template}：
                     点击地图上相邻省份即可移动，右键 / Esc 取消。</span>
                 <button class="btn-action" data-clear-army="1">取消选择</button>
+            </div>
+            <div class="order-row">
+                <span class="or-label">指令</span>
+                <button class="btn-action" data-order="hold" ${selectedArmy.order === 'hold' ? 'disabled' : ''}>待机</button>
+                <button class="btn-action" data-order="advance" ${selectedArmy.order === 'advance' ? 'disabled' : ''}>进攻</button>
+                <button class="btn-action" data-order="retreat" ${selectedArmy.order === 'retreat' ? 'disabled' : ''}>撤退</button>
+                <button class="btn-action" data-advance-one="1">向敌方推进一格</button>
             </div>` : ''}
             ${armies.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">尚无部队，先在上方部署。</div>' :
                 armies.map((a) => this.renderArmyCard(a, divisions, selectedArmy)).join('')}
+        </div>
+        ${this.renderAirSection(tag)}
+        ${this.renderFleetSection(tag)}`;
+    },
+
+    /** 空军区块：部署 + 编制列表（可移动、可解散） */
+    renderAirSection(tag) {
+        const aircraft = this.game.aircraft;
+        const groups = this.game.airForcesOf(tag);
+        const target = this.resolveDeployTarget(tag);
+        const templates = this.game.availableAir(tag);
+        return `
+        <div class="panel-section">
+            <h4>空军（${groups.length} 群）</h4>
+            <div class="deploy-meta">部署目标：${target != null ? (this.game.provinceById(target)?.name || target) : '无可用省份'}
+                · 飞机总量 ${Math.round(groups.reduce((s, g) => s + g.planes, 0))} 架</div>
+            ${templates.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">未解锁任何飞机型号，需先研究对应科技。</div>' :
+                templates.map((tplId) => {
+                    const tpl = aircraft[tplId];
+                    const cost = this.game.aircraftCost(tplId);
+                    const blocked = this.game.canCommand({
+                        t: 'deployAirForce', country: tag, province: target, template: tplId, count: 1,
+                    });
+                    return `<div class="focus-card deploy-card">
+                        <div class="dc-head">
+                            <span>${tpl.icon} ${tpl.name}</span>
+                            <span class="dc-cost">${tpl.planes} 架/群 · ${Object.entries(cost.equipment).map(([k, v]) =>
+                                `${this.game.equipment[k]?.name || k}×${v * tpl.planes}`).join('、') || '无装备消耗'}</span>
+                        </div>
+                        <div class="dc-actions">
+                            <button class="btn-action" data-deploy-air="${tplId}" ${blocked ? 'disabled' : ''}>部署 1 群</button>
+                        </div>
+                    </div>`;
+                }).join('')}
+            ${groups.length === 0 ? '' : groups.map((g) => this.renderAirCard(g)).join('')}
         </div>`;
+    },
+
+    /** 舰队区块：只能在沿海省份部署 */
+    renderFleetSection(tag) {
+        const ships = this.game.ships;
+        const fleets = this.game.fleetsOf(tag);
+        const coastal = this.game.provincesOf(tag).filter((p) => p.coastal);
+        const target = this.resolveFleetTarget(tag);
+        const templates = this.game.availableShips(tag);
+        return `
+        <div class="panel-section">
+            <h4>海军（${fleets.length} 支）</h4>
+            <div class="deploy-meta">部署目标：${target != null ? (this.game.provinceById(target)?.name || target) : '无可用沿海省份'}
+                · 舰船总量 ${Math.round(fleets.reduce((s, f) => s + f.ships, 0))} 艘
+                ${coastal.length ? `· 沿海省份 ${coastal.length} 个` : ''}</div>
+            ${coastal.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">没有控制的沿海省份，无法部署舰队。</div>' :
+                templates.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">未解锁任何舰种，需先研究对应科技。</div>' :
+                templates.map((tplId) => {
+                    const tpl = ships[tplId];
+                    const cost = this.game.shipCost(tplId);
+                    const blocked = this.game.canCommand({
+                        t: 'deployFleet', country: tag, province: target, template: tplId, count: 1,
+                    });
+                    return `<div class="focus-card deploy-card">
+                        <div class="dc-head">
+                            <span>${tpl.icon} ${tpl.name}</span>
+                            <span class="dc-cost">${tpl.ships} 艘/支 · ${Object.entries(cost.equipment).map(([k, v]) =>
+                                `${this.game.equipment[k]?.name || k}×${v * tpl.ships}`).join('、') || '无装备消耗'}</span>
+                        </div>
+                        <div class="dc-actions">
+                            <button class="btn-action" data-deploy-fleet="${tplId}" ${blocked ? 'disabled' : ''}>部署 1 支</button>
+                        </div>
+                    </div>`;
+                }).join('')}
+            ${fleets.length === 0 ? '' : fleets.map((f) => this.renderFleetCard(f)).join('')}
+        </div>`;
+    },
+
+    /** 空军群卡片 */
+    renderAirCard(g) {
+        const tpl = this.game.aircraft[g.template];
+        const prov = this.game.provinceById(g.provinceId);
+        const opts = this.game.moveOptionsFor(g.id, 'air');
+        const legal = opts.filter((o) => o.ok);
+        const isSel = this.game.selectedAir === g.id;
+        return `<div class="army-card${isSel ? ' selected' : ''}">
+            <div class="ac-head">
+                <span class="ac-name">${tpl ? tpl.icon + ' ' + tpl.name : g.template}</span>
+                <span class="ac-prov">${prov ? prov.name : g.provinceId}</span>
+            </div>
+            <div class="ac-strength">飞机 ${Math.round(g.planes)} 架</div>
+            <div class="ac-actions">
+                <button class="btn-action" data-select-air="${g.id}">${isSel ? '已选中' : '地图选中'}</button>
+                <button class="btn-action" data-focus-air="${g.id}">定位</button>
+                <button class="btn-action" data-disband-air="${g.id}">解散</button>
+            </div>
+            ${legal.length === 0 ? '<div class="ac-move-note">无可移动的相邻省份</div>' : `
+                <div class="ac-move">
+                    <select class="ui-select" data-move-select="${g.id}" data-kind="air">
+                        <option value="">移动至相邻省份…</option>
+                        ${opts.map((o) => `<option value="${o.id}" ${o.ok ? '' : 'disabled'}>${o.name}${o.ok ? '' : `（${o.err || '不可移动'}）`}</option>`).join('')}
+                    </select>
+                    <button class="btn-action" data-move-unit="${g.id}" data-kind="air">移动</button>
+                </div>`}
+        </div>`;
+    },
+
+    /** 舰队卡片 */
+    renderFleetCard(f) {
+        const tpl = this.game.ships[f.template];
+        const prov = this.game.provinceById(f.provinceId);
+        const opts = this.game.moveOptionsFor(f.id, 'fleet');
+        const legal = opts.filter((o) => o.ok);
+        const isSel = this.game.selectedFleet === f.id;
+        return `<div class="army-card${isSel ? ' selected' : ''}">
+            <div class="ac-head">
+                <span class="ac-name">${tpl ? tpl.icon + ' ' + tpl.name : f.template}</span>
+                <span class="ac-prov">${prov ? prov.name : f.provinceId}</span>
+            </div>
+            <div class="ac-strength">舰船 ${Math.round(f.ships)} 艘</div>
+            <div class="ac-actions">
+                <button class="btn-action" data-select-fleet="${f.id}">${isSel ? '已选中' : '地图选中'}</button>
+                <button class="btn-action" data-focus-fleet="${f.id}">定位</button>
+                <button class="btn-action" data-disband-fleet="${f.id}">解散</button>
+            </div>
+            ${legal.length === 0 ? '<div class="ac-move-note">无可移动的相邻省份</div>' : `
+                <div class="ac-move">
+                    <select class="ui-select" data-move-select="${f.id}" data-kind="fleet">
+                        <option value="">移动至相邻省份…</option>
+                        ${opts.map((o) => `<option value="${o.id}" ${o.ok ? '' : 'disabled'}>${o.name}${o.ok ? '' : `（${o.err || '不可移动'}）`}</option>`).join('')}
+                    </select>
+                    <button class="btn-action" data-move-unit="${f.id}" data-kind="fleet">移动</button>
+                </div>`}
+        </div>`;
+    },
+
+    /** 舰队部署目标：优先当前选中省份（须沿海），否则首个控制的沿海省份 */
+    resolveFleetTarget(tag) {
+        const mine = this.game.provincesOf(tag).filter((p) => p.coastal);
+        if (mine.length === 0) return null;
+        const sel = this.game.selectedProvince;
+        if (sel != null && mine.some((p) => p.id === sel)) return sel;
+        return mine[0].id;
     },
 
     /** 单支部队卡片：查看状态、地图选中、定位、快捷移动、解散 */
@@ -710,7 +918,10 @@ const UI = {
                 <span class="ac-name">${tpl ? tpl.icon + ' ' + tpl.name : a.template}</span>
                 <span class="ac-prov">${prov ? prov.name : a.provinceId}${inSelectedProv ? ' · 当前选中省份' : ''}</span>
             </div>
-            <div class="ac-strength">兵力 ${Math.round(a.strength)} · 组织度 ${Math.round(a.org * 100)}% · 速度 ${a.speed}</div>
+            <div class="ac-strength">兵力 ${Math.round(a.strength)} · 组织度 ${Math.round(a.org * 100)}% · 速度 ${a.speed}
+                ${a.order && a.order !== 'hold' ? ` · 指令：${a.order === 'advance' ? '进攻' : '撤退'}` : ''}
+                ${this.game.supplyFactor(a.provinceId) === null ? '' :
+                    ` · 补给 ${Math.round(this.game.supplyFactor(a.provinceId) * 100)}%`}</div>
             <div class="ac-actions">
                 <button class="btn-action" data-select-army="${a.id}">${isSel ? '已选中' : '地图选中'}</button>
                 <button class="btn-action" data-focus-army="${a.id}">定位</button>
@@ -793,20 +1004,83 @@ const UI = {
     renderDiplomacy() {
         const tag = this.game.playerTag;
         const c = this.game.playerCountry();
-        const others = Object.keys(this.game.state.countries).filter(t => t !== tag);
-        const wars = this.game.state.wars.filter(w => w.a === tag || w.b === tag);
+        const others = Object.keys(this.game.state.countries).filter((t) => t !== tag);
+        const wars = this.game.warsOf(tag);
+        const myFaction = this.game.factionOf(tag);
+        const fac = myFaction ? this.game.factionById(myFaction) : null;
+        const isLeader = !!fac && this.game.factionLeader(myFaction) === tag;
+        const invitesToMe = this.game.factionInvites().filter((i) => i.to === tag);
+        const leaseTargets = others
+            .filter((t) => (c.relations?.[t] || 0) >= 50 || this.game.factionOf(t) === myFaction)
+            .sort((a, b) => (c.relations?.[b] || 0) - (c.relations?.[a] || 0))
+            .slice(0, 8);
+
         return `
         <div class="panel-section">
-            <h4>战争状态</h4>
+            <h4>阵营</h4>
+            ${!fac ? '<div style="font-size:12px;color:var(--text-dim)">未加入任何阵营</div>' : `
+                <div class="panel-row"><span class="pr-label">阵营</span>
+                    <span class="pr-value">${this.tt(fac.name) || fac.id} ${isLeader ? '（领袖）' : ''}</span></div>
+                <div class="panel-row"><span class="pr-label">成员</span>
+                    <span class="pr-value">${fac.members.map((m) => this.ownerLabel(m)).join('、')}</span></div>
+                <div style="margin-top:6px">
+                    ${isLeader ? `<button class="btn-action" data-invite-open="1">邀请国家加入阵营</button>` : ''}
+                    <button class="btn-action" data-leave-faction="1">退出阵营</button>
+                </div>`}
+        </div>
+        <div class="panel-section">
+            <h4>阵营邀请</h4>
+            ${invitesToMe.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">没有待处理的邀请</div>' :
+                invitesToMe.map((i) => `
+                    <div class="diplo-card">
+                        <div class="dc-name">${this.ownerLabel(i.from)} 邀请你加入阵营 ${this.tt(i.faction) || i.faction}</div>
+                        <div style="margin-top:6px">
+                            <button class="btn-action" data-invite-accept="${i.id}">接受</button>
+                            <button class="btn-action" data-invite-reject="${i.id}">拒绝</button>
+                        </div>
+                    </div>`).join('')}
+        </div>
+        <div class="panel-section">
+            <h4>战争状态（${wars.length}）</h4>
             ${wars.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">无进行中的战争</div>' :
                 wars.map(w => {
-                    const other = w.a === tag ? w.b : w.a;
-                    const oc = this.game.countryById(other);
+                    const side = (w.alliesA || [w.a]).includes(tag) ? 'a' : 'b';
+                    const otherSide = side === 'a' ? (w.alliesB || [w.b]) : (w.alliesA || [w.a]);
+                    const other = otherSide.find((t) => t !== tag) || otherSide[0];
+                    // 敌方控制的州（可作为吞并目标）
+                    const enemyStates = Object.values(this.game.state.states)
+                        .filter((st) => st.owner === other && st.provinces.length > 0)
+                        .slice(0, 6);
                     return `<div class="diplo-card">
-                        <div class="dc-name">${oc ? oc.flag + ' ' + this.tt(oc.name) : other}</div>
-                        <div class="dc-rel neg">战争（${w.status}）</div>
+                        <div class="dc-name">${this.ownerLabel(other)}</div>
+                        <div class="dc-rel neg">${w.status === 'peacePending' ? '等待和谈回应' : '交战中'}
+                            · 分数 ${Math.round(side === 'a' ? (w.scoreA || 0) : (w.scoreB || 0))}</div>
                         <div style="margin-top:6px">
-                            <button class="btn-action" data-diplo="peace" data-target="${other}">议和</button>
+                            <button class="btn-action" data-diplo="peace" data-target="${other}"
+                                ${this.game.canCommand({ t: 'makePeace', from: tag, to: other }) ? 'disabled' : ''}>议和</button>
+                        </div>
+                        ${enemyStates.length ? `<div style="margin-top:6px;font-size:11px;color:var(--text-dim)">
+                            可设为目标：${enemyStates.map((st) => `
+                                <button class="btn-action mini" data-war-goal="${other}" data-state="${st.id}"
+                                    style="margin:2px">吞并州 ${st.id}</button>`).join('')}
+                        </div>` : ''}
+                    </div>`;
+                }).join('')}
+        </div>
+        <div class="panel-section">
+            <h4>租借</h4>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
+                向阵营盟友或关系 ≥ 50 的国家输送补给（每月每国 60，30 天冷却）
+            </div>
+            ${leaseTargets.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">没有可租借的对象</div>' :
+                leaseTargets.map((t) => {
+                    const used = this.game.lendLeaseOf(tag)[t]?.amount || 0;
+                    const blocked = this.game.canCommand({ t: 'lendLease', country: tag, to: t, amount: 10, resource: 'supplies' });
+                    return `<div class="diplo-card">
+                        <div class="dc-name">${this.ownerLabel(t)}
+                            <span style="color:var(--text-dim);font-size:11px">· 已借 ${used}</span></div>
+                        <div style="margin-top:6px">
+                            <button class="btn-action" data-lend="${t}" ${blocked ? 'disabled' : ''}>租借 10 补给</button>
                         </div>
                     </div>`;
                 }).join('')}
@@ -820,9 +1094,10 @@ const UI = {
                 const cls = rel > 30 ? 'pos' : (rel < -30 ? 'neg' : '');
                 const blockWar = this.game.canCommand({ t: 'declareWar', from: tag, to: oid });
                 const blockPeace = this.game.canCommand({ t: 'makePeace', from: tag, to: oid });
+                const sameFaction = this.game.factionOf(oid) === myFaction && myFaction;
                 return `<div class="diplo-card">
                     <div class="dc-name">${other.flag} ${this.tt(other.name)} ${other.faction ? '☥' : ''}</div>
-                    <div class="dc-rel ${cls}">关系: ${Math.round(rel)} ${rel > 0 ? '↑' : '↓'}</div>
+                    <div class="dc-rel ${cls}">关系: ${Math.round(rel)} ${rel > 0 ? '↑' : '↓'}${sameFaction ? ' · 同阵营' : ''}</div>
                     <div style="margin-top:6px">
                         <button class="btn-action" data-diplo="war" data-target="${oid}" ${blockWar ? 'disabled' : ''}>宣战</button>
                         <button class="btn-action" data-diplo="peace" data-target="${oid}" ${blockPeace ? 'disabled' : ''}>议和</button>
@@ -833,35 +1108,210 @@ const UI = {
         </div>`;
     },
 
-    // ----- 情报 / 驻军 -----
-    renderIntelligence() {
+    // ----- 战争进度 -----
+    renderWar() {
         const tag = this.game.playerTag;
         const c = this.game.playerCountry();
+        const wars = this.game.warsOf(tag);
+        const PEACE_SCORE = window.Core.PEACE_SCORE || 100;
         const myArmies = this.game.armiesOf(tag);
-        const selProv = this.game.selectedProvince ? this.game.provinceById(this.game.selectedProvince) : null;
+        const myAir = this.game.airForcesOf(tag);
+        const myFleets = this.game.fleetsOf(tag);
+        const totalStrength = Math.round(myArmies.reduce((s, a) => s + (a.strength || 0), 0));
+
+        // 交战省份：同一省份内存在多方部队
+        const battled = new Map();
+        for (const a of this.game.allArmies()) {
+            if (a.strength <= 0) continue;
+            if (!battled.has(a.provinceId)) battled.set(a.provinceId, new Set());
+            battled.get(a.provinceId).add(a.owner);
+        }
+        const frontProvinces = [...battled.entries()]
+            .filter(([, owners]) => owners.size > 1)
+            .map(([pid]) => this.game.provinceById(pid))
+            .filter(Boolean);
+
+        // 补给被切断的部队
+        const supply = this.game.supplyMap();
+        const cutOff = myArmies.filter((a) => (supply.get(a.provinceId) ?? 1) <= 0).length;
+
+        const scoreBar = (score) => {
+            const pct = Math.min(100, (score / PEACE_SCORE) * 100);
+            return `<div class="panel-bar"><div class="panel-bar-fill" style="width:${pct}%;background:var(--red)"></div></div>`;
+        };
+
         return `
         <div class="panel-section">
-            <h4>部队部署</h4>
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">开局部队与后续部署的部队都可直接指挥；点击地图上的圆形标记，或在「部队」面板中选择。</div>
-            ${myArmies.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">无部队</div>' :
-                myArmies.map(a => {
-                    const prov = this.game.provinceById(a.provinceId);
-                    const tpl = this.game.divisions[a.template];
-                    return `<div class="army-card">
-                        <div class="ac-name">${prov ? prov.name : a.provinceId}</div>
-                        <div class="ac-strength">${tpl ? tpl.name : a.template} · 兵力 ${Math.round(a.strength)}</div>
+            <h4>进行中的战争（${wars.length}）</h4>
+            ${wars.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">当前没有进行中的战争</div>' :
+                wars.map(w => {
+                    const side = (w.alliesA || [w.a]).includes(tag) ? 'a' : 'b';
+                    const score = side === 'a' ? (w.scoreA || 0) : (w.scoreB || 0);
+                    const otherSide = side === 'a' ? (w.alliesB || [w.b]) : (w.alliesA || [w.a]);
+                    const other = otherSide.find((t) => t !== tag) || otherSide[0];
+                    const statusText = w.status === 'peacePending' ? '等待和谈回应' : '交战中';
+                    return `<div class="diplo-card">
+                        <div class="dc-name">${this.ownerLabel(other)} ${other !== tag ? '' : ''}</div>
+                        <div class="dc-rel ${w.status === 'peacePending' ? 'warn' : 'neg'}">${statusText}
+                            · 战争分数 ${Math.round(score)} / ${PEACE_SCORE}</div>
+                        ${scoreBar(score)}
+                        <div style="font-size:11px;color:var(--text-dim);margin-top:4px">
+                            开始于 tick ${w.startedAt} · 阵营：${(w.alliesA || []).concat(w.alliesB || []).join('、')}
+                        </div>
+                        ${(w.goals || []).length ? `<div style="font-size:11px;margin-top:4px">目标：${
+                            w.goals.map(g => g.type === 'annexState' ? `吞并州 ${g.state}`
+                                : g.type === 'resources' ? `索取 ${g.amount} ${g.resource}` : g.type).join('、')
+                        }</div>` : ''}
+                        <div style="margin-top:6px">
+                            <button class="btn-action" data-diplo="peace" data-target="${other}"
+                                ${this.game.canCommand({ t: 'makePeace', from: tag, to: other }) ? 'disabled' : ''}>议和</button>
+                        </div>
                     </div>`;
                 }).join('')}
         </div>
         <div class="panel-section">
-            <h4>当前选中省份</h4>
-            ${selProv ? `
-                <div class="panel-row"><span class="pr-label">省份</span><span class="pr-value">${selProv.name}</span></div>
-                <div class="panel-row"><span class="pr-label">控制方</span><span class="pr-value">${this.ownerLabel(selProv.controller)}</span></div>
-                <div class="panel-row"><span class="pr-label">地形</span><span class="pr-value">${(TERRAIN[selProv.terrain] || { name: selProv.terrain }).name}</span></div>
-                <div class="panel-row"><span class="pr-label">供给</span><span class="pr-value">${selProv.supply}</span></div>
-            ` : '<div style="font-size:12px;color:var(--text-dim)">请在地图上选择一个省份</div>'}
+            <h4>我方军事力量</h4>
+            <div class="panel-row"><span class="pr-label">陆军部队</span><span class="pr-value">${myArmies.length} 支 · 兵力 ${totalStrength}</span></div>
+            <div class="panel-row"><span class="pr-label">空军群</span><span class="pr-value">${myAir.length} 群 · 飞机 ${Math.round(myAir.reduce((s, g) => s + g.planes, 0))} 架</span></div>
+            <div class="panel-row"><span class="pr-label">舰队</span><span class="pr-value">${myFleets.length} 支 · 舰船 ${Math.round(myFleets.reduce((s, f) => s + f.ships, 0))} 艘</span></div>
+            <div class="panel-row"><span class="pr-label">补给状态</span>
+                <span class="pr-value ${cutOff ? 'warn' : 'pos'}">${cutOff ? `${cutOff} 支部队被切断补给` : '全部部队补给正常'}</span></div>
+            <div class="panel-row"><span class="pr-label">人力 / 装备</span>
+                <span class="pr-value">${Math.round(c.manpower)} / ${Object.keys(c.equipment || {}).length} 种</span></div>
+        </div>
+        <div class="panel-section">
+            <h4>交战省份（${frontProvinces.length}）</h4>
+            ${frontProvinces.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">没有多国部队交叠的省份</div>' :
+                frontProvinces.slice(0, 40).map(p => `
+                    <div class="panel-row">
+                        <span class="pr-label">${p.name}</span>
+                        <span class="pr-value">${this.ownerLabel(p.controller)}</span>
+                    </div>`).join('')}
+        </div>
+        <div class="panel-section">
+            <h4>待回应的和平提议</h4>
+            ${this.game.peaceOffers().length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">没有待回应的和平提议</div>' :
+                this.game.peaceOffers().map(o => `
+                    <div class="diplo-card">
+                        <div class="dc-name">来自 ${this.ownerLabel(o.from)} 的和平条件</div>
+                        <div style="font-size:11px;margin:4px 0">${o.terms.map(t =>
+                            t.type === 'annexState' ? `吞并州 ${t.state}`
+                            : t.type === 'resources' ? `转让 ${t.amount} ${t.resource}` : '停战').join('、')}</div>
+                        <div style="margin-top:6px">
+                            <button class="btn-action" data-peace="accept" data-offer="${o.id}">接受</button>
+                            <button class="btn-action" data-peace="reject" data-offer="${o.id}">拒绝</button>
+                        </div>
+                    </div>`).join('')}
         </div>`;
+    },
+
+    // ----- 通知中心 -----
+    renderNotices() {
+        const history = (this.game.state.history || []).slice().reverse();
+        const filter = this._noticeFilter || 'all';
+        const CATEGORIES = [
+            { key: 'all', label: '全部' },
+            { key: 'war', label: '战争' },
+            { key: 'build', label: '建造' },
+            { key: 'tech', label: '科技' },
+            { key: 'diplo', label: '外交' },
+        ];
+        const classify = (text) => {
+            if (/战斗|占领|宣战|投降|停战|和平|战争分数|制空|制海|空战|海战|轰炸/.test(text)) return 'war';
+            if (/建造|完成建造/.test(text)) return 'build';
+            if (/科技|科研/.test(text)) return 'tech';
+            if (/阵营|租借|邀请|议和|归属变更/.test(text)) return 'diplo';
+            return 'other';
+        };
+        const shown = history.filter((h) => filter === 'all' || classify(h.text) === filter);
+        return `
+        <div class="panel-section">
+            <h4>通知筛选</h4>
+            <div class="filter-row">
+                ${CATEGORIES.map(c => `<button class="btn-action ${filter === c.key ? 'on' : ''}"
+                    data-notice-filter="${c.key}">${c.label}</button>`).join('')}
+            </div>
+        </div>
+        <div class="panel-section">
+            <h4>播报（${shown.length}）</h4>
+            ${shown.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">暂无通知</div>' :
+                shown.slice(0, 80).map(h => `<div class="log-entry"><span class="le-date">${h.date}</span>${h.text}</div>`).join('')}
+        </div>`;
+    },
+
+    // ----- 情报 / 省份详情 -----
+    renderIntelligence() {
+        const tag = this.game.playerTag;
+        const myArmies = this.game.armiesOf(tag);
+        const myAir = this.game.airForcesOf(tag);
+        const myFleets = this.game.fleetsOf(tag);
+        const selProv = this.game.selectedProvince ? this.game.provinceById(this.game.selectedProvince) : null;
+        const supply = this.game.supplyMap();
+
+        const unitRows = (list, kind) => list.map((u) => {
+            const prov = this.game.provinceById(u.provinceId);
+            const tpl = kind === 'air' ? this.game.aircraft[u.template] : kind === 'fleet' ? this.game.ships[u.template] : this.game.divisions[u.template];
+            const label = kind === 'air' ? `${Math.round(u.planes)} 架`
+                : kind === 'fleet' ? `${Math.round(u.ships)} 艘` : `兵力 ${Math.round(u.strength)}`;
+            return `<div class="army-card">
+                <div class="ac-name">${prov ? prov.name : u.provinceId}</div>
+                <div class="ac-strength">${tpl ? tpl.name : u.template} · ${label}</div>
+            </div>`;
+        }).join('');
+
+        return `
+        <div class="panel-section">
+            <h4>我方部队（${myArmies.length + myAir.length + myFleets.length}）</h4>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
+                开局部队与后续部署的部队都可直接指挥；点击地图上的标记，或在「部队」面板中选择。
+            </div>
+            ${myArmies.length ? `<div style="font-size:11px;color:var(--text-dim);margin-bottom:4px">陆军</div>${unitRows(myArmies, 'army')}` : ''}
+            ${myAir.length ? `<div style="font-size:11px;color:var(--text-dim);margin:6px 0 4px">空军</div>${unitRows(myAir, 'air')}` : ''}
+            ${myFleets.length ? `<div style="font-size:11px;color:var(--text-dim);margin:6px 0 4px">海军</div>${unitRows(myFleets, 'fleet')}` : ''}
+            ${(myArmies.length + myAir.length + myFleets.length) === 0 ? '<div style="font-size:12px;color:var(--text-dim)">无部队</div>' : ''}
+        </div>
+        <div class="panel-section">
+            <h4>省份详情</h4>
+            ${selProv ? this.renderProvinceDetail(selProv, supply) :
+                '<div style="font-size:12px;color:var(--text-dim)">请在地图上选择一个省份</div>'}
+        </div>`;
+    },
+
+    /** 省份详情：地形 / 供给 / 基建 / 驻军 / 建造一屏看完 */
+    renderProvinceDetail(prov, supply) {
+        const s = this.game.state;
+        const st = this.game.stateOfProvince(prov.id);
+        const terrainDef = window.Core.terrainDefense(prov.terrain, 'infantry', this.game.campaign.ctx(), s.countries[prov.controller]);
+        const factor = this.game.supplyFactor(prov.id);
+        const armies = this.game.armiesIn(prov.id).filter((a) => a.strength > 0);
+        const air = this.game.airForcesIn(prov.id);
+        const fleets = this.game.fleetsIn(prov.id);
+        const row = (label, value, cls = '') =>
+            `<div class="panel-row"><span class="pr-label">${label}</span><span class="pr-value ${cls}">${value}</span></div>`;
+
+        return `
+            ${row('省份', prov.name)}
+            ${row('控制方', this.ownerLabel(prov.controller))}
+            ${row('地形', `${(TERRAIN[prov.terrain] || { name: prov.terrain }).name}（防御 +${terrainDef.toFixed(2)}）`)}
+            ${row('沿海', prov.coastal ? '是' : '否')}
+            ${row('供给', `${prov.supply}${factor === null ? '' : ` · 补给系数 ${(factor * 100).toFixed(0)}%`}`,
+                factor !== null && factor <= 0 ? 'warn' : '')}
+            ${row('基建 / 要塞', `${prov.infrastructure} / ${prov.fortLevel || 0}`)}
+            ${row('受损', prov.damage ? `${Math.round(prov.damage)}（补给折损 ${(window.Core.damageSupplyPenalty(prov.damage) * 100).toFixed(0)}%）` : '无')}
+            ${st ? row('所属州', `${st.name || st.id}（${this.ownerLabel(st.owner)}）`) : ''}
+            ${st ? row('人口 / 工厂', `${Math.round(st.population)} / ${st.factories}`) : ''}
+            ${row('驻军', `${armies.length} 支${armies.length ? ` · 兵力 ${Math.round(armies.reduce((sum, a) => sum + a.strength, 0))}` : ''}`)}
+            ${row('空军 / 舰队', `${air.length} 群 / ${fleets.length} 支`)}
+            ${row('我方建造', this.game.state.countries[this.game.playerTag]?.construction?.filter((b) => b.province === prov.id).length || 0)}
+            ${armies.length ? `<div style="margin-top:6px">${armies.map((a) => {
+                const tpl = this.game.divisions[a.template];
+                const mine = a.owner === this.game.playerTag;
+                return `<div class="army-card${mine ? ' mine' : ''}">
+                    <div class="ac-name">${tpl ? tpl.icon + ' ' + tpl.name : a.template}
+                        <span style="color:var(--text-dim);font-weight:400">· ${this.ownerLabel(a.owner)}</span></div>
+                    <div class="ac-strength">兵力 ${Math.round(a.strength)} · 组织度 ${Math.round(a.org * 100)}%</div>
+                </div>`;
+            }).join('')}</div>` : ''}`;
     },
 
     // ----- 日志 -----
@@ -905,6 +1355,8 @@ const UI = {
         if (mine) this._deployTarget = prov.id;
 
         const armies = this.game.armiesIn(prov.id).filter((a) => a.strength > 0);
+        const airGroups = this.game.airForcesIn(prov.id);
+        const fleets = this.game.fleetsIn(prov.id);
         const selArmyId = this.game.selectedArmy;
         const unitRows = armies.map((a) => {
             const tpl = this.game.divisions[a.template];
@@ -916,6 +1368,32 @@ const UI = {
                 ${isMine
                     ? `<button class="pc-btn${selected ? ' on' : ''}" data-army-select="${a.id}">${selected ? '已选中' : '选中'}</button>`
                     : `<span class="pc-army-owner">${this.ownerLabel(a.owner)}</span>`}
+            </div>`;
+        }).join('');
+
+        const airRows = airGroups.map((g) => {
+            const tpl = this.game.aircraft[g.template];
+            const isMine = g.owner === tag;
+            const sel = this.game.selectedAir === g.id;
+            return `<div class="pc-army${sel ? ' selected' : ''}">
+                <span class="pc-army-name">${tpl ? tpl.icon + ' ' + tpl.name : g.template}</span>
+                <span class="pc-army-str">${Math.round(g.planes)}</span>
+                ${isMine
+                    ? `<button class="pc-btn${sel ? ' on' : ''}" data-air-select="${g.id}">${sel ? '已选中' : '选中'}</button>`
+                    : `<span class="pc-army-owner">${this.ownerLabel(g.owner)}</span>`}
+            </div>`;
+        }).join('');
+
+        const fleetRows = fleets.map((f) => {
+            const tpl = this.game.ships[f.template];
+            const isMine = f.owner === tag;
+            const sel = this.game.selectedFleet === f.id;
+            return `<div class="pc-army${sel ? ' selected' : ''}">
+                <span class="pc-army-name">${tpl ? tpl.icon + ' ' + tpl.name : f.template}</span>
+                <span class="pc-army-str">${Math.round(f.ships)}</span>
+                ${isMine
+                    ? `<button class="pc-btn${sel ? ' on' : ''}" data-fleet-select="${f.id}">${sel ? '已选中' : '选中'}</button>`
+                    : `<span class="pc-army-owner">${this.ownerLabel(f.owner)}</span>`}
             </div>`;
         }).join('');
 
@@ -932,6 +1410,9 @@ const UI = {
             }).join('')}</div>`;
 
         const terrain = (typeof TERRAIN !== 'undefined' && TERRAIN[prov.terrain]?.name) || prov.terrain;
+        const supplyFactor = this.game.supplyFactor(prov.id);
+        const supplyText = supplyFactor === null ? prov.supply
+            : `${prov.supply} · 补给 ${Math.round(supplyFactor * 100)}%`;
         const movingNote = selArmyId != null && armies.some((a) => a.id === selArmyId)
             ? '<div class="pc-note">已选中部队：点击地图上相邻省份移动，右键 / Esc 取消。</div>' : '';
 
@@ -941,8 +1422,10 @@ const UI = {
                 <button class="pc-close" data-province-close title="关闭">✕</button>
             </div>
             <div class="pc-sub"><span class="pc-owner">${this.ownerLabel(prov.controller)}</span>
-                · ${terrain} · 供给 ${prov.supply}${prov.damage ? ` · 受损 ${prov.damage}` : ''}</div>
+                · ${terrain}${prov.coastal ? ' · 沿海' : ''} · 供给 ${supplyText}${prov.damage ? ` · 受损 ${Math.round(prov.damage)}` : ''}</div>
             ${armies.length === 0 ? '' : `<div class="pc-section-title">驻扎部队</div><div class="pc-armies">${unitRows}</div>`}
+            ${airGroups.length === 0 ? '' : `<div class="pc-section-title">空军</div><div class="pc-armies">${airRows}</div>`}
+            ${fleets.length === 0 ? '' : `<div class="pc-section-title">舰队</div><div class="pc-armies">${fleetRows}</div>`}
             ${deployButtons}
             ${movingNote}
         `;
@@ -967,6 +1450,80 @@ const UI = {
 
     closeModal() {
         document.getElementById('modal').classList.add('hidden');
+    },
+
+    /** 邀请国家加入阵营：列出满足条件的候选国家 */
+    openInviteDialog() {
+        const tag = this.game.playerTag;
+        const myFaction = this.game.factionOf(tag);
+        if (!myFaction) { this.toast('你还没有加入阵营'); return; }
+        const candidates = Object.keys(this.game.state.countries)
+            .filter((t) => t !== tag && !this.game.factionOf(t) &&
+                (this.game.countryById(t)?.relations?.[tag] ?? 0) >= -20)
+            .sort((a, b) => (this.game.countryById(b).relations?.[tag] || 0)
+                - (this.game.countryById(a).relations?.[tag] || 0))
+            .slice(0, 30);
+        if (candidates.length === 0) {
+            this.showModal('邀请加入阵营',
+                '<p>没有满足条件（未加入阵营且关系 ≥ -20）的国家。</p>',
+                [{ text: '确定', cls: 'primary', action: () => this.closeModal() }]);
+            return;
+        }
+        this.showModal('邀请加入阵营', `
+            <div class="modal-scroll">
+                ${candidates.map((t) => `<div class="diplo-card">
+                    <div class="dc-name">${this.ownerLabel(t)}
+                        <span style="color:var(--text-dim);font-size:11px">· 关系 ${Math.round(this.game.countryById(t).relations?.[tag] || 0)}</span></div>
+                    <div style="margin-top:6px">
+                        <button class="btn-action" data-invite-send="${t}">发送邀请</button>
+                    </div>
+                </div>`).join('')}
+            </div>`,
+            [{ text: '关闭', action: () => this.closeModal() }]);
+        document.querySelectorAll('[data-invite-send]').forEach(el => {
+            el.addEventListener('click', () => {
+                const r = this.game.command({
+                    t: 'inviteFaction', from: tag, faction: myFaction, to: el.dataset.inviteSend,
+                });
+                if (!r.ok) {
+                    this.showModal('提示', `<p>${r.err}</p>`, [{ text: '确定', cls: 'primary', action: () => this.closeModal() }]);
+                } else {
+                    this.closeModal();
+                }
+                this.refreshAll();
+            });
+        });
+    },
+
+    // ===================== 和平会议弹窗 =====================
+    showPeaceConference(offer) {
+        // 与事件弹窗一致：出现时暂停时间，处理后恢复原速度
+        this._peacePauseSpeed = this.game.speed;
+        this.game.speed = 0;
+
+        const terms = offer.terms.map((t) => {
+            if (t.type === 'annexState') return `· 吞并州 ${t.state}`;
+            if (t.type === 'resources') return `· 转让 ${t.amount} ${t.resource}`;
+            return '· 停战';
+        }).join('<br/>');
+        this.showModal('和平会议', `
+            <p><b>${this.ownerLabel(offer.from)}</b> 提出和平条件：</p>
+            <p style="margin:8px 0">${terms}</p>
+            <p style="color:var(--text-dim);font-size:12px">拒绝后战争将继续，战争分数不会清零。</p>
+        `, [
+            { text: '接受', cls: 'primary', action: () => {
+                this.game.command({ t: 'acceptPeace', country: this.game.playerTag, offerId: offer.id });
+                this.closeModal();
+                this.game.speed = this._peacePauseSpeed;
+                this.refreshAll();
+            }},
+            { text: '拒绝', action: () => {
+                this.game.command({ t: 'rejectPeace', country: this.game.playerTag, offerId: offer.id });
+                this.closeModal();
+                this.game.speed = this._peacePauseSpeed;
+                this.refreshAll();
+            }},
+        ]);
     },
 
     // ===================== 事件弹窗（战役事件） =====================
@@ -1144,6 +1701,207 @@ const UI = {
                     if (this.game.selectedArmy === id) this.game.clearArmySelection();
                     this.toast('部队已解散');
                 }
+                this.refreshAll();
+            });
+        });
+        // 部队指令：待机 / 进攻 / 撤退 / 手动推进一格
+        document.querySelectorAll('[data-order]').forEach(el => {
+            el.addEventListener('click', () => {
+                const sel = this.game.selectedArmy;
+                if (sel == null) { this.toast('请先选中一支部队'); return; }
+                const r = this.game.command({ t: 'setArmyOrder', armyId: sel, order: el.dataset.order });
+                if (!r.ok) this.toast(r.err || '指令设置失败');
+                this.refreshAll();
+            });
+        });
+        document.querySelectorAll('[data-advance-one]').forEach(el => {
+            el.addEventListener('click', () => {
+                const sel = this.game.selectedArmy;
+                if (sel == null) { this.toast('请先选中一支部队'); return; }
+                const r = this.game.advanceArmyOneStep(sel);
+                if (!r.ok) this.toast(r.err || '无法推进');
+                this.refreshAll();
+            });
+        });
+        // 空军：部署 / 选中 / 定位 / 解散 / 移动
+        document.querySelectorAll('[data-deploy-air]').forEach(el => {
+            el.addEventListener('click', () => {
+                const target = this.resolveDeployTarget(tag);
+                if (target == null) { this.toast('请先选择一个自己控制的省份'); return; }
+                const r = this.game.command({
+                    t: 'deployAirForce', country: tag, province: target, template: el.dataset.deployAir, count: 1,
+                });
+                if (!r.ok) this.toast(r.err || '部署失败');
+                else this.toast('已部署 1 个空军群');
+                this.refreshAll();
+            });
+        });
+        document.querySelectorAll('[data-select-air]').forEach(el => {
+            el.addEventListener('click', () => {
+                this.game.selectAirForce(Number(el.dataset.selectAir));
+                this.closePanel();
+            });
+        });
+        document.querySelectorAll('[data-focus-air]').forEach(el => {
+            el.addEventListener('click', () => {
+                const g = this.game.airForceById(Number(el.dataset.focusAir));
+                if (!g) return;
+                this.closePanel();
+                this.game.selectAirForce(g.id);
+                if (typeof MapView !== 'undefined' && MapView.focusProvince) MapView.focusProvince(g.provinceId);
+            });
+        });
+        document.querySelectorAll('[data-disband-air]').forEach(el => {
+            el.addEventListener('click', () => {
+                const id = Number(el.dataset.disbandAir);
+                const r = this.game.command({ t: 'disbandAirForce', airId: id });
+                if (!r.ok) this.toast(r.err || '解散失败');
+                else if (this.game.selectedAir === id) this.game.clearArmySelection();
+                this.refreshAll();
+            });
+        });
+        // 海军：部署 / 选中 / 定位 / 解散 / 移动
+        document.querySelectorAll('[data-deploy-fleet]').forEach(el => {
+            el.addEventListener('click', () => {
+                const target = this.resolveFleetTarget(tag);
+                if (target == null) { this.toast('需要先控制一个沿海省份'); return; }
+                const r = this.game.command({
+                    t: 'deployFleet', country: tag, province: target, template: el.dataset.deployFleet, count: 1,
+                });
+                if (!r.ok) this.toast(r.err || '部署失败');
+                else this.toast('已部署 1 支舰队');
+                this.refreshAll();
+            });
+        });
+        document.querySelectorAll('[data-select-fleet]').forEach(el => {
+            el.addEventListener('click', () => {
+                this.game.selectFleet(Number(el.dataset.selectFleet));
+                this.closePanel();
+            });
+        });
+        document.querySelectorAll('[data-focus-fleet]').forEach(el => {
+            el.addEventListener('click', () => {
+                const f = this.game.fleetById(Number(el.dataset.focusFleet));
+                if (!f) return;
+                this.closePanel();
+                this.game.selectFleet(f.id);
+                if (typeof MapView !== 'undefined' && MapView.focusProvince) MapView.focusProvince(f.provinceId);
+            });
+        });
+        document.querySelectorAll('[data-disband-fleet]').forEach(el => {
+            el.addEventListener('click', () => {
+                const id = Number(el.dataset.disbandFleet);
+                const r = this.game.command({ t: 'disbandFleet', fleetId: id });
+                if (!r.ok) this.toast(r.err || '解散失败');
+                else if (this.game.selectedFleet === id) this.game.clearArmySelection();
+                this.refreshAll();
+            });
+        });
+        // 空军 / 舰队移动
+        document.querySelectorAll('[data-move-unit]').forEach(el => {
+            el.addEventListener('click', () => {
+                const id = Number(el.dataset.moveUnit);
+                const kind = el.dataset.kind;
+                const select = document.querySelector(`[data-move-select="${id}"]`);
+                const to = select ? Number(select.value) : NaN;
+                if (!to) { this.toast('请先选择目标省份'); return; }
+                const r = this.game.command(this.game.moveCommandFor(kind, id, to, this.game.playerTag));
+                if (!r.ok) { this.toast(r.err || '移动失败'); return; }
+                this.game.selectProvince(to);
+                if (kind === 'air') this.game.selectAirForce(id);
+                else this.game.selectFleet(id);
+                this.toast('已移动');
+                this.refreshAll();
+                if (typeof MapView !== 'undefined' && MapView.requestDraw) MapView.requestDraw();
+            });
+        });
+        // 生产：暂停 / 恢复产线、取消建造
+        document.querySelectorAll('[data-prod-toggle]').forEach(el => {
+            el.addEventListener('click', () => {
+                const line = this.game.countryById(tag).production?.[Number(el.dataset.prodToggle)];
+                if (!line) return;
+                const r = this.game.command({
+                    t: 'toggleProduction', country: tag, index: Number(el.dataset.prodToggle),
+                    disabled: !line.disabled,
+                });
+                this.notify(r);
+                this.refreshAll();
+            });
+        });
+        document.querySelectorAll('[data-construction-cancel]').forEach(el => {
+            el.addEventListener('click', () => {
+                const r = this.game.command({
+                    t: 'cancelConstruction', country: tag, index: Number(el.dataset.constructionCancel),
+                });
+                this.notify(r);
+                this.refreshAll();
+            });
+        });
+        // 通知筛选
+        document.querySelectorAll('[data-notice-filter]').forEach(el => {
+            el.addEventListener('click', () => {
+                this._noticeFilter = el.dataset.noticeFilter;
+                this._lastPanelSignature = null;
+                this.renderPanel(this.currentPanel);
+            });
+        });
+        // 和平提议：接受 / 拒绝
+        document.querySelectorAll('[data-peace]').forEach(el => {
+            el.addEventListener('click', () => {
+                const r = this.game.command({
+                    t: el.dataset.peace, country: tag, offerId: Number(el.dataset.offer),
+                });
+                if (!r.ok) this.showModal('提示', `<p>${r.err}</p>`, [{ text: '确定', cls: 'primary', action: () => this.closeModal() }]);
+                this.refreshAll();
+            });
+        });
+        // 阵营：邀请 / 接受 / 拒绝 / 退出
+        document.querySelectorAll('[data-invite-open]').forEach(el => {
+            el.addEventListener('click', () => this.openInviteDialog());
+        });
+        document.querySelectorAll('[data-invite-accept]').forEach(el => {
+            el.addEventListener('click', () => {
+                this.game.command({ t: 'acceptFactionInvite', country: tag, inviteId: Number(el.dataset.inviteAccept) });
+                this.refreshAll();
+            });
+        });
+        document.querySelectorAll('[data-invite-reject]').forEach(el => {
+            el.addEventListener('click', () => {
+                this.game.command({ t: 'rejectFactionInvite', country: tag, inviteId: Number(el.dataset.inviteReject) });
+                this.refreshAll();
+            });
+        });
+        document.querySelectorAll('[data-leave-faction]').forEach(el => {
+            el.addEventListener('click', () => {
+                this.showModal('退出阵营', '<p>确认退出当前阵营？退出后阵营战争不再自动卷入。</p>', [
+                    { text: '确认退出', cls: 'primary', action: () => {
+                        this.game.command({ t: 'leaveFaction', country: tag });
+                        this.closeModal();
+                        this.refreshAll();
+                    }},
+                    { text: '取消', action: () => this.closeModal() },
+                ]);
+            });
+        });
+        // 租借
+        document.querySelectorAll('[data-lend]').forEach(el => {
+            el.addEventListener('click', () => {
+                const r = this.game.command({
+                    t: 'lendLease', country: tag, to: el.dataset.lend, amount: 10, resource: 'supplies',
+                });
+                if (!r.ok) this.toast(r.err || '租借失败');
+                else this.toast('已租借 10 补给');
+                this.refreshAll();
+            });
+        });
+        // 战争目标：把敌方控制的州设为吞并目标
+        document.querySelectorAll('[data-war-goal]').forEach(el => {
+            el.addEventListener('click', () => {
+                const r = this.game.command({
+                    t: 'addWarGoal', from: tag, to: el.dataset.warGoal,
+                    goal: { type: 'annexState', state: Number(el.dataset.state) },
+                });
+                if (!r.ok) this.toast(r.err || '添加目标失败');
                 this.refreshAll();
             });
         });

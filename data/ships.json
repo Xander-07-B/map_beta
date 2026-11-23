@@ -1,0 +1,28 @@
+{
+  "ships": {
+    "destroyer": {
+      "name": "驱逐舰", "icon": "⚓", "ships": 3, "role": "surface",
+      "cost": { "manpower": 0, "equipment": { "destroyer": 1 }, "supplies": 0.2 },
+      "requires": { "tech": "destroyer_hull" },
+      "navalCombat": 1.0, "bombardment": 0.08
+    },
+    "cruiser": {
+      "name": "巡洋舰", "icon": "⚓", "ships": 3, "role": "surface",
+      "cost": { "manpower": 0, "equipment": { "cruiser": 1 }, "supplies": 0.25 },
+      "requires": { "tech": "cruiser_hull" },
+      "navalCombat": 1.2, "bombardment": 0.14
+    },
+    "carrier": {
+      "name": "航母", "icon": "⚓", "ships": 2, "role": "carrier",
+      "cost": { "manpower": 0, "equipment": { "carrier": 1 }, "supplies": 0.35 },
+      "requires": { "tech": "carrier_hull" },
+      "navalCombat": 1.1, "bombardment": 0.1, "airCoverage": 0.4
+    },
+    "battleship": {
+      "name": "战列舰", "icon": "⚓", "ships": 2, "role": "surface",
+      "cost": { "manpower": 0, "equipment": { "battleship": 1 }, "supplies": 0.3 },
+      "requires": { "tech": "battleship_hull" },
+      "navalCombat": 1.6, "bombardment": 0.26
+    }
+  }
+}

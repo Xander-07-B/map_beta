@@ -7,11 +7,15 @@
 export * from './rng.js';
 export * from './clock.js';
 export * from './determinism.js';
+export * from './supply.js';
 export * from './state.js';
 export * from './commands.js';
 export * from './rules.js';
 export * from './economy.js';
 export * from './war.js';
+export * from './airnavy.js';
+export * from './diplomacy.js';
+export * from './save.js';
 export * from './ai.js';
 export * from '../content/schema.js';
 export * from '../content/loader.js';
@@ -22,11 +26,15 @@ export * from '../campaign.js';
 import * as rng from './rng.js';
 import * as clock from './clock.js';
 import * as determinism from './determinism.js';
+import * as supply from './supply.js';
 import * as state from './state.js';
 import * as commands from './commands.js';
 import * as rules from './rules.js';
 import * as economy from './economy.js';
 import * as war from './war.js';
+import * as airnavy from './airnavy.js';
+import * as diplomacy from './diplomacy.js';
+import * as save from './save.js';
 import * as ai from './ai.js';
 import * as schema from '../content/schema.js';
 import * as loader from '../content/loader.js';
@@ -39,11 +47,15 @@ if (typeof window !== 'undefined') {
         ...rng,
         ...clock,
         ...determinism,
+        ...supply,
         ...state,
         ...commands,
         ...rules,
         ...economy,
         ...war,
+        ...airnavy,
+        ...diplomacy,
+        ...save,
         ...ai,
         ...schema,
         ...loader,

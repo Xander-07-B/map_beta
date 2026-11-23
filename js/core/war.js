@@ -1,8 +1,9 @@
 /* ============================================================
  * 战役核心 · 军事结算（war.js）
- * 军队只保留存在性与数量（指南界定），但需要一条可玩的最小闭环：
- *   部署（扣人力/装备）→ 移动（沿邻接表）→ 战斗（地形/组织度/科技修正）
+ * 军队的完整闭环：
+ *   部署（扣人力/装备）→ 移动（地形移动代价）→ 战斗（地形/组织度/宽度/空中支援）
  *   → 占领（setController）→ 州归属翻转 → 战争分数 → 议和 / 投降
+ *   以及每 tick 的部队维持：补给网络、组织度恢复、补给切断后的流失。
  * 战斗结算在此完成；所有状态变更要么走命令管道，要么写入 pending 队列。
  * ============================================================ */
 
@@ -10,20 +11,71 @@ import { orderedKeys, orderedNumericIds } from './determinism.js';
 import { applyCommand } from './commands.js';
 import { recomputeVictoryPoints, clearAtWar } from './state.js';
 import { divisionBonus, dateOf } from './economy.js';
+import { airPowerByOwner, airSupportModifiers } from './airnavy.js';
+import { clamp01, supplyFactorFor } from './supply.js';
 
 /** 战争分数达到该值即自动议和 */
 export const PEACE_SCORE = 100;
 
-/** 地形防御修正（与 data.js 的 TERRAIN 一致，此处为结算用的纯数值） */
+/**
+ * 地形防御修正。
+ * 注意：省份地形取值是 `plains`（复数），早期版本这里写成 `plain`，
+ * 导致地形修正永远取不到、地形形同虚设——两个键都要保留。
+ */
 export const TERRAIN_DEFENSE = {
-    plain: 0.0, forest: 0.3, mountain: 0.5, desert: 0.1,
-    tundra: 0.2, hills: 0.15, ocean: 0.0, coast: 0.0,
+    plain: 0.0, plains: 0.0, hills: 0.15, forest: 0.3, mountain: 0.5,
+    desert: 0.1, tundra: 0.2, ocean: 0.0, coast: 0.0, sea: 0.0,
 };
 
-export function terrainDefense(terrain, templateId, ctx) {
+/** 地形移动代价：进入该地形需要付出的组织度代价（>1 越大越难走） */
+export const TERRAIN_MOVE_COST = {
+    plain: 1.0, plains: 1.0, hills: 1.25, forest: 1.5, mountain: 2.2,
+    desert: 1.3, tundra: 1.6, ocean: 1.0, coast: 1.0, sea: 1.0,
+};
+
+/** 省份战斗宽度基准（同时受基建影响） */
+export const PROVINCE_BATTLE_WIDTH = 100;
+
+/** 地形防御修正：基础地形 + 部队模板地形加成 + 国家科技地形加成 */
+export function terrainDefense(terrain, templateId, ctx, c) {
     const base = TERRAIN_DEFENSE[terrain] ?? 0;
     const templateBonus = ctx.divisions?.[templateId]?.terrainBonus?.[terrain] || 0;
-    return base + templateBonus;
+    const techBonus = c?.bonuses?.terrain?.[terrain] || 0;
+    return base + templateBonus + techBonus;
+}
+
+/** 地形移动代价 */
+export function terrainMoveCost(terrain) {
+    return TERRAIN_MOVE_COST[terrain] ?? 1;
+}
+
+/** 省份战斗宽度：基建越高，能同时交战的部队越多 */
+export function battleWidth(province) {
+    if (!province) return PROVINCE_BATTLE_WIDTH;
+    return PROVINCE_BATTLE_WIDTH + (province.infrastructure || 0) * 5;
+}
+
+/** 部队模板的战斗宽度 */
+function templateWidth(ctx, templateId) {
+    const w = ctx.divisions?.[templateId]?.width;
+    return Number.isFinite(w) && w > 0 ? w : 10;
+}
+
+/**
+ * 从一组部队中选出本轮可参战的单位：
+ * 按兵力降序累加战斗宽度，超过省份宽度的部队留在预备队（本轮不交战、也不受损）。
+ */
+function pickFighters(list, ctx, width) {
+    const sorted = list.slice().sort((a, b) => b.strength - a.strength || a.id - b.id);
+    const out = [];
+    let used = 0;
+    for (const a of sorted) {
+        const w = templateWidth(ctx, a.template);
+        if (out.length > 0 && used + w > width) continue;
+        out.push(a);
+        used += w;
+    }
+    return out;
 }
 
 /** 军队战斗力：基础值 × 组织度系数 × 科技加成 × 随机扰动 */
@@ -35,11 +87,9 @@ function combatPower(s, army, ctx, stat) {
     return army.strength * orgFactor * (1 + tech) * rnd;
 }
 
-function clamp01(v) { return Math.max(0, Math.min(1, v)); }
-
 /**
  * 结算一个省份内的战斗。
- * 最强一方为进攻方，其余为防御方；进攻方对每个防御方分别计算伤害。
+ * 最强一方为进攻方，其余为防御方；受战斗宽度限制，超出宽度的部队留在预备队。
  * @returns {{killed: number, damage: number, attacker: string|null}}
  */
 export function resolveBattle(s, ctx, provinceId, province) {
@@ -47,23 +97,33 @@ export function resolveBattle(s, ctx, provinceId, province) {
     const owners = new Set(here.map((a) => a.owner));
     if (here.length < 2 || owners.size < 2) return { killed: 0, damage: 0, attacker: null };
 
-    // 进攻方 = 兵力最强的一支
-    const sorted = here.slice().sort((a, b) => b.strength - a.strength);
+    // 战斗宽度：超出宽度的部队本轮不参战
+    const fighters = pickFighters(here, ctx, battleWidth(province));
+    if (fighters.length < 2 || new Set(fighters.map((a) => a.owner)).size < 2) {
+        return { killed: 0, damage: 0, attacker: null };
+    }
+
+    // 进攻方 = 参战兵力最强的一支
+    const sorted = fighters.slice().sort((a, b) => b.strength - a.strength || a.id - b.id);
     const attacker = sorted[0];
     const defenders = sorted.slice(1).filter((a) => a.owner !== attacker.owner);
     if (defenders.length === 0) return { killed: 0, damage: 0, attacker: null };
 
     const terrain = province?.terrain || 'plains';
-    const terrainDef = TERRAIN_DEFENSE[terrain] ?? 0;
+    const terrainDef = terrainDefense(terrain, attacker.template, ctx, s.countries[attacker.owner]);
     const fortDef = (province?.fortLevel || 0) * 0.1;
+
+    // 空中支援：制空权为进攻方/防御方分别提供修正
+    const air = airPowerByOwner(s, ctx, provinceId);
+    const airMod = airSupportModifiers(air, attacker.owner, defenders[0].owner);
 
     let killed = 0;
     let damage = 0;
     const destroyed = [];
 
     for (const def of defenders) {
-        const atk = combatPower(s, attacker, ctx, 'attack');
-        const defPow = combatPower(s, def, ctx, 'defense');
+        const atk = combatPower(s, attacker, ctx, 'attack') * (1 + airMod.attack);
+        const defPow = combatPower(s, def, ctx, 'defense') * (1 + airMod.defense);
         const dmg = Math.max(1, atk * 0.55 - defPow * (0.25 + terrainDef + fortDef) * 0.6);
         def.strength -= dmg;
         def.org = clamp01(def.org - 0.01);
@@ -145,13 +205,9 @@ export function settleWarScore(s, ctx) {
         war.scoreB += (aProvs === 0 ? 2 : 0) + bProvs * 0.05;
 
         if (war.scoreA >= PEACE_SCORE || war.scoreB >= PEACE_SCORE) {
-            const winner = war.scoreA >= PEACE_SCORE ? war.a : war.b;
-            const loser = winner === war.a ? war.b : war.a;
-            applyCommand({ t: 'makePeace', from: winner, to: loser }, s, ctx);
-            s.history.push({
-                tick: s.tick, date: dateOf(s, s.tick),
-                text: `${winner} 与 ${loser} 达成停战（战争分数 ${Math.round(winner === war.a ? war.scoreA : war.scoreB)}）`,
-            });
+            // 分数达标 → 交由和平会议规则生成和平提议（不再直接停战）
+            if (s.peaceOffers.some((o) => o.warId === war.id)) continue;
+            s.pending.push({ kind: 'peaceProposed', payload: { warId: war.id } });
         }
     }
 
@@ -179,13 +235,46 @@ function controlledCount(s, tag) {
 }
 
 /**
- * 每 tick 的军事结算：战斗 → 占领 → 州归属 → 战争分数。
+ * 部队维持：组织度恢复与补给切断后的流失。
+ * 有补给且未参战的部队组织度向满值恢复；补给被切断的部队持续掉组织度与兵力。
+ * @param {Set<number>} fought 本 tick 发生过战斗的省份（参战部队不恢复组织度）
+ * @returns {object} 汇总
+ */
+export function settleArmies(s, ctx, fought = new Set()) {
+    const summary = { supplied: 0, starved: 0, orgRecovered: 0 };
+
+    for (const a of s.armies) {
+        if (a.strength <= 0) continue;
+        const factor = supplyFactorFor(s, ctx, a.provinceId);
+        const tpl = ctx.divisions?.[a.template];
+        const base = tpl?.baseStrength || 1;
+        if (factor <= 0) {
+            a.org = clamp01(a.org - 0.012);
+            a.strength = Math.max(0, a.strength - base * 0.0008);
+            summary.starved++;
+        } else {
+            if (!fought.has(a.provinceId)) {
+                // 组织度向满值恢复，速度受补给系数影响
+                a.org = clamp01(a.org + 0.02 * factor);
+                summary.orgRecovered++;
+            }
+            if (a.org > 0.6 && !fought.has(a.provinceId)) {
+                a.strength += base * 0.0006 * factor;   // 缓慢补员
+            }
+            summary.supplied++;
+        }
+    }
+    return summary;
+}
+
+/**
+ * 每 tick 的军事结算：战斗 → 占领 → 部队维持 → 州归属 → 战争分数。
  * @returns {object} 汇总（供日志/AI 评估）
  */
 export function settleWar(s, ctx) {
-    const summary = { battles: 0, killed: 0, occupied: 0 };
+    const summary = { battles: 0, killed: 0, occupied: 0, supplied: 0, starved: 0 };
 
-    // 只处理有军队的省份（军队数量少，遍历成本可控）
+    // 1) 战斗：只处理有军队的省份（军队数量少，遍历成本可控）
     const byProvince = new Map();
     for (const a of s.armies || []) {
         if (a.strength <= 0) continue;
@@ -193,11 +282,13 @@ export function settleWar(s, ctx) {
         byProvince.get(a.provinceId).push(a);
     }
 
+    const fought = new Set();
     for (const [pid, list] of byProvince) {
         const province = s.provinces[pid];
         if (!province) continue;
         const res = resolveBattle(s, ctx, pid, province);
         if (res.killed > 0) {
+            fought.add(pid);
             summary.battles++;
             summary.killed += res.killed;
             s.history.push({
@@ -213,6 +304,11 @@ export function settleWar(s, ctx) {
         }
         if (applyOccupation(s, ctx, pid, province)) summary.occupied++;
     }
+
+    // 2) 部队维持（组织度 / 补给）——本 tick 参战的部队不恢复
+    const maintain = settleArmies(s, ctx, fought);
+    summary.supplied = maintain.supplied;
+    summary.starved = maintain.starved;
 
     checkStateOwnership(s, ctx);
     settleWarScore(s, ctx);

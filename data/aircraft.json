@@ -1,0 +1,29 @@
+{
+  "aircraft": {
+    "fighter": {
+      "name": "战斗机", "icon": "✈", "planes": 20, "role": "fighter",
+      "cost": { "manpower": 0, "equipment": { "fighter": 1 }, "supplies": 0.15 },
+      "requires": { "tech": "fighter_design" },
+      "airCombat": 1.0, "groundSupport": 0.0, "bombing": 0.0
+    },
+    "tactical": {
+      "name": "战术轰炸机", "icon": "✈", "planes": 15, "role": "tactical",
+      "cost": { "manpower": 0, "equipment": { "tactical_bomber": 1 }, "supplies": 0.18 },
+      "requires": { "tech": "tactical_bomber" },
+      "airCombat": 0.6, "groundSupport": 0.18, "bombing": 0.1
+    },
+    "strategic": {
+      "name": "战略轰炸机", "icon": "✈", "planes": 12, "role": "strategic",
+      "cost": { "manpower": 0, "equipment": { "bomber": 1 }, "supplies": 0.22 },
+      "requires": { "tech": "bomber_design" },
+      "airCombat": 0.35, "groundSupport": 0.0, "bombing": 0.3
+    },
+    "transport": {
+      "name": "运输机", "icon": "⛑", "planes": 10, "role": "transport",
+      "cost": { "manpower": 0, "equipment": { "truck": 2 }, "supplies": 0.1 },
+      "requires": { "tech": "aero_dynamics" },
+      "airCombat": 0.0, "groundSupport": 0.0, "bombing": 0.0,
+      "supplyBonus": 0.15
+    }
+  }
+}

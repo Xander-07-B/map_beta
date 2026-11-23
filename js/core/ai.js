@@ -16,6 +16,12 @@ export function countryPower(s, tag) {
     for (const a of s.armies || []) {
         if (a.owner === tag) p += a.strength * 0.5;
     }
+    for (const g of s.airForces || []) {
+        if (g.owner === tag) p += g.planes * 0.1;
+    }
+    for (const f of s.fleets || []) {
+        if (f.owner === tag) p += f.ships * 0.3;
+    }
     return p;
 }
 
@@ -49,12 +55,23 @@ function borderCountries(s, ctx, tag) {
     return out;
 }
 
-/** 该国需要优先生产的装备：优先满足现有部队模板，否则步兵武器 */
+/** 该国需要优先生产的装备：优先满足现有部队模板，其次空军/海军，否则步兵武器 */
 function neededEquipment(s, ctx, tag) {
     const armies = armiesOf(s, tag);
     if (armies.length) {
         const tpl = ctx.divisions[armies[0].template];
         const keys = Object.keys(tpl?.cost?.equipment || {});
+        if (keys.length) return keys[0];
+    }
+    const c = s.countries[tag];
+    const air = (c.unlockedAir || []).find((t) => ctx.aircraft?.[t]);
+    if (air) {
+        const keys = Object.keys(ctx.aircraft[air].cost.equipment || {});
+        if (keys.length) return keys[0];
+    }
+    const ship = (c.unlockedShips || []).find((t) => ctx.ships?.[t]);
+    if (ship) {
+        const keys = Object.keys(ctx.ships[ship].cost.equipment || {});
         if (keys.length) return keys[0];
     }
     return 'infantry_weapon';
@@ -125,16 +142,14 @@ function aiMilitary(s, ctx, tag, command) {
     const atWar = !!c.flags.atWar;
     const armies = armiesOf(s, tag);
 
+    // 空中与海上力量：有条件就补建
+    aiAirNavy(s, ctx, tag, command);
+
     if (atWar) {
-        // 1) 现有部队向最近的敌方省份推进
+        // 1) 作战部队一律下达进攻指令，由每 tick 的指令结算自动推进
         for (const army of armies) {
-            const neighbors = ctx.neighbors?.[String(army.provinceId)] || [];
-            const target = neighbors
-                .map((nid) => s.provinces[nid])
-                .filter((p) => p && p.controller && p.controller !== tag)
-                .sort((a, b) => (b.fortLevel || 0) - (a.fortLevel || 0))[0];
-            if (target) {
-                command({ t: 'moveArmy', armyId: army.id, to: target.id });
+            if (army.order !== 'advance') {
+                command({ t: 'setArmyOrder', armyId: army.id, order: 'advance' });
             }
         }
 
@@ -147,6 +162,13 @@ function aiMilitary(s, ctx, tag, command) {
             }
         }
         return;
+    }
+
+    // 和平：解除进攻指令，部队待机
+    for (const army of armies) {
+        if (army.order !== 'hold') {
+            command({ t: 'setArmyOrder', armyId: army.id, order: 'hold' });
+        }
     }
 
     // 和平：评估是否对接壤的弱国动手
@@ -164,6 +186,42 @@ function aiMilitary(s, ctx, tag, command) {
     }
     if (best) {
         command({ t: 'declareWar', from: tag, to: best.tag, justification: 'AI 扩张' });
+    }
+}
+
+/**
+ * 空中与海上力量建设：已解锁且装备充足时补建一个群/舰队。
+ * 空军部署在首个控制省份，舰队需要沿海省份。
+ */
+function aiAirNavy(s, ctx, tag, command) {
+    const c = s.countries[tag];
+    const provinces = controlledProvinces(s, tag);
+    if (provinces.length === 0) return;
+
+    const airGroups = (s.airForces || []).filter((g) => g.owner === tag).length;
+    const airTpl = (c.unlockedAir || []).find((t) => ctx.aircraft?.[t]);
+    if (airTpl && airGroups < 4) {
+        const tpl = ctx.aircraft[airTpl];
+        const affordable = Object.entries(tpl.cost.equipment || {}).every(
+            ([eqId, need]) => (c.equipment?.[eqId] || 0) >= need * tpl.planes
+        );
+        if (affordable) {
+            command({ t: 'deployAirForce', country: tag, province: provinces[0].id, template: airTpl, count: 1 });
+        }
+    }
+
+    const coastal = provinces.find((p) => p.coastal);
+    if (!coastal) return;
+    const fleets = (s.fleets || []).filter((f) => f.owner === tag).length;
+    const shipTpl = (c.unlockedShips || []).find((t) => ctx.ships?.[t]);
+    if (shipTpl && fleets < 3) {
+        const tpl = ctx.ships[shipTpl];
+        const affordable = Object.entries(tpl.cost.equipment || {}).every(
+            ([eqId, need]) => (c.equipment?.[eqId] || 0) >= need * tpl.ships
+        );
+        if (affordable) {
+            command({ t: 'deployFleet', country: tag, province: coastal.id, template: shipTpl, count: 1 });
+        }
     }
 }
 

@@ -16,6 +16,9 @@ function assert(cond, msg) {
     if (cond) passed++;
     else { failures.push(msg); console.error('  ✗ ' + msg); }
 }
+function assertEqual(a, b, msg) {
+    assert(a === b, `${msg}（期望 ${JSON.stringify(b)}，实际 ${JSON.stringify(a)}）`);
+}
 function section(name) { console.log('\n■ ' + name); }
 
 // ---------- 极简 DOM 桩 ----------
@@ -131,7 +134,7 @@ section('1. 初始化与面板渲染');
 
     UI.init(Game);
 
-    const panels = ['overview', 'politics', 'economy', 'production', 'army', 'tech', 'diplomacy', 'intelligence', 'log'];
+    const panels = ['overview', 'politics', 'economy', 'production', 'army', 'tech', 'diplomacy', 'war', 'intelligence', 'notices', 'log'];
     for (const p of panels) {
         let threw = null;
         try { UI.openPanel(p); } catch (e) { threw = e; }
@@ -150,7 +153,7 @@ section('2. 空态与边界渲染');
     Game.startWith('POL');
     Game.selectProvince(null);
     UI.refreshAll();
-    const panels = ['overview', 'politics', 'economy', 'production', 'army', 'tech', 'diplomacy', 'intelligence', 'log'];
+    const panels = ['overview', 'politics', 'economy', 'production', 'army', 'tech', 'diplomacy', 'war', 'intelligence', 'notices', 'log'];
     for (const p of panels) {
         let threw = null;
         try { UI.openPanel(p); } catch (e) { threw = e; }
@@ -255,6 +258,126 @@ section('4. 部队交互');
     assert(Game.armyById(newest.id).provinceId === 1159314679, '部队位置已更新');
     Game.selectProvince(null);
     assert(documentStub.getElementById('provinceCard').classList.contains('hidden'), '取消选中后速览卡隐藏');
+}
+
+// ---------- 空中 / 海上 / 外交 / 战争面板 ----------
+section('5. 空军、海军、外交与战争面板');
+{
+    Game.startWith('GER');
+    Game.selectProvince(null);
+    UI.refreshAll();
+
+    // 解锁并备足装备，覆盖空态 → 有态的渲染分支
+    const c = Game.countryById('GER');
+    c.unlockedAir = ['fighter', 'strategic'];
+    c.unlockedShips = ['destroyer'];
+    c.equipment.fighter = 100;
+    c.equipment.bomber = 100;
+    c.equipment.destroyer = 30;
+    c.resources.supplies = 200;
+
+    // 空军：部署 → 面板渲染 → 移动 → 解散
+    const airBefore = Game.allAirForces().length;
+    assert(Game.command({ t: 'deployAirForce', country: 'GER', province: 1159312769, template: 'fighter', count: 1 }).ok, '部署空军群');
+    assertEqual(Game.allAirForces().length, airBefore + 1, '空军群已创建');
+    const group = Game.allAirForces()[Game.allAirForces().length - 1];
+    assert(group.planes > 0, '空军群有飞机数量');
+    UI.openPanel('army');
+    assert(documentStub.getElementById('panelContent').innerHTML.includes('空军'), '部队面板渲染空军区块');
+    UI.closePanel();
+
+    assert(Game.command({ t: 'moveAirForce', airId: group.id, to: 1159314679 }).ok, '空军移动到相邻省份');
+    assertEqual(Game.airForceById(group.id).provinceId, 1159314679, '空军位置已更新');
+    assert(Game.command({ t: 'disbandAirForce', airId: group.id }).ok, '解散空军群');
+    assertEqual(Game.allAirForces().some((g) => g.id === group.id), false, '解散后空军群移除');
+
+    // 海军：只能在沿海省份部署
+    const coastal = Game.provincesOf('GER').filter((p) => p.coastal);
+    if (coastal.length > 0) {
+        const fleetBefore = Game.allFleets().length;
+        assert(Game.command({ t: 'deployFleet', country: 'GER', province: coastal[0].id, template: 'destroyer', count: 1 }).ok, '在沿海省份部署舰队');
+        assertEqual(Game.allFleets().length, fleetBefore + 1, '舰队已创建');
+        const fleet = Game.allFleets()[Game.allFleets().length - 1];
+        UI.openPanel('army');
+        assert(documentStub.getElementById('panelContent').innerHTML.includes('海军'), '部队面板渲染海军区块');
+        UI.closePanel();
+        assert(Game.command({ t: 'disbandFleet', fleetId: fleet.id }).ok, '解散舰队');
+    } else {
+        assert(true, '当前剧本德国无沿海省份，跳过舰队部署');
+    }
+    // 非沿海省份部署舰队必须被拒
+    assert(!Game.command({ t: 'deployFleet', country: 'GER', province: 1159312769, template: 'destroyer', count: 1 }).ok, '非沿海省份部署舰队被拒');
+
+    // 部队指令：进攻 / 待机
+    const army = Game.armiesOf('GER')[0];
+    assert(Game.command({ t: 'setArmyOrder', armyId: army.id, order: 'advance' }).ok, '下达进攻指令');
+    assertEqual(Game.armyById(army.id).order, 'advance', '指令已写入部队');
+    assert(!Game.command({ t: 'setArmyOrder', armyId: army.id, order: 'fly' }).ok, '非法指令被拒');
+    assert(Game.command({ t: 'setArmyOrder', armyId: army.id, order: 'hold' }).ok, '取消指令');
+
+    // 外交：宣战 → 战争面板 → 战争目标 → 阵营邀请 → 租借
+    assert(Game.command({ t: 'declareWar', from: 'GER', to: 'POL', justification: '测试' }).ok, '宣战');
+    UI.openPanel('war');
+    const warHtml = documentStub.getElementById('panelContent').innerHTML;
+    assert(warHtml.includes('进行中的战争'), '战争面板渲染战争列表');
+    assert(warHtml.includes('我方军事力量'), '战争面板渲染军事力量');
+    UI.closePanel();
+
+    const war = Game.state.wars.find((w) => w.status !== 'ended' && (w.a === 'GER' || w.b === 'GER'));
+    assert(war, '战争记录存在');
+    assert(Game.command({ t: 'addWarGoal', from: 'GER', to: 'POL', goal: { type: 'annexState', state: 102 } }).ok, '添加吞并州的战争目标');
+    assert(Game.command({ t: 'addWarGoal', from: 'GER', to: 'POL', goal: { type: 'resources', resource: 'steel', amount: 50 } }).ok, '添加资源战争目标');
+    assertEqual(war.goals.length, 2, '战争目标已记录');
+    assert(!Game.command({ t: 'addWarGoal', from: 'GER', to: 'POL', goal: { type: 'annexState', state: 102 } }).ok, '重复目标被拒');
+
+    // 阵营：德国是轴心国领袖，可邀请未加入阵营的国家
+    const candidates = Object.keys(Game.state.countries)
+        .filter((t) => t !== 'GER' && !Game.factionOf(t) && t !== 'POL' && t !== 'FRA');
+    if (candidates.length > 0) {
+        const target = candidates[0];
+        assert(Game.command({ t: 'inviteFaction', from: 'GER', faction: 'axis', to: target }).ok, '阵营领袖发出邀请');
+        const invite = Game.factionInvites().find((i) => i.to === target);
+        assert(invite, '邀请已记录');
+        assert(Game.command({ t: 'acceptFactionInvite', country: target, inviteId: invite.id }).ok, '受邀国接受邀请');
+        assertEqual(Game.factionOf(target), 'axis', '受邀国已加入阵营');
+        assert(Game.command({ t: 'leaveFaction', country: target }).ok, '退出阵营');
+        assertEqual(Game.factionOf(target), null, '退出后无阵营');
+    }
+    assert(!Game.command({ t: 'inviteFaction', from: 'POL', faction: 'axis', to: candidates[0] || 'XXX' }).ok, '非领袖无法发出邀请');
+
+    // 租借：同阵营或高关系国家
+    const leaseTarget = Object.keys(Game.state.countries)
+        .find((t) => t !== 'GER' && Game.factionOf(t) === Game.factionOf('GER'));
+    if (leaseTarget) {
+        assert(Game.command({ t: 'lendLease', country: 'GER', to: leaseTarget, amount: 10, resource: 'supplies' }).ok, '向阵营盟友租借补给');
+        assert((Game.lendLeaseOf('GER')[leaseTarget]?.amount || 0) >= 10, '租借额度已记录');
+    }
+    assert(!Game.command({ t: 'lendLease', country: 'GER', to: 'POL', amount: 10, resource: 'supplies' }).ok, '对交战国租借被拒');
+
+    // 和平会议：提出 → 接受
+    assert(Game.command({ t: 'proposePeace', from: 'GER', to: 'POL', warId: war.id, terms: [{ type: 'ceasefire' }] }).ok, '提出和平条件');
+    const offer = Game.peaceOffers().find((o) => o.warId === war.id);
+    assert(offer, '和平提议已记录');
+    assert(Game.command({ t: 'acceptPeace', country: 'POL', offerId: offer.id }).ok, '败方接受和平条件');
+    assertEqual(Game.peaceOffers().some((o) => o.id === offer.id), false, '接受后提议移除');
+    assertEqual(Game.state.wars.find((w) => w.id === war.id).status, 'ended', '接受后战争结束');
+
+    // 通知中心：筛选切换不抛错
+    UI._noticeFilter = 'war';
+    UI.openPanel('notices');
+    assert(documentStub.getElementById('panelContent').innerHTML.includes('播报'), '通知中心渲染播报列表');
+    UI.closePanel();
+    UI._noticeFilter = 'all';
+
+    // 生产：暂停产线与取消建造
+    assert(Game.command({ t: 'allocateFactory', country: 'GER', line: { equipment: 'infantry_weapon', factories: 1 } }).ok, '分配生产线');
+    assertEqual(Game.countryById('GER').production.length, 1, '产线已建立');
+    assert(Game.command({ t: 'toggleProduction', country: 'GER', index: 0, disabled: true }).ok, '暂停产线');
+    assertEqual(Game.countryById('GER').production[0].disabled, true, '产线已暂停');
+    assert(Game.command({ t: 'startConstruction', country: 'GER', kind: 'civs', state: 101 }).ok, '开始建造');
+    assertEqual(Game.countryById('GER').construction.length, 1, '建造项目已入队');
+    assert(Game.command({ t: 'cancelConstruction', country: 'GER', index: 0 }).ok, '取消建造');
+    assertEqual(Game.countryById('GER').construction.length, 0, '建造项目已移除');
 }
 
 // ============================================================

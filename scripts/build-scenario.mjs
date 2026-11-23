@@ -36,8 +36,31 @@ const NAME_OVERRIDES = {
     CHN: "中国",
 };
 
-// 生成省份的默认数值（手写模板中的省份优先）。
-const DEFAULT_PROVINCE = { terrain: "plains", coastal: false, supply: 0.5, infrastructure: 2 };
+// coastal 取自 index.json（由弧段引用判定，见 build-index.mjs）；terrain 按省份 id 合成。
+// 手写模板中的省份优先使用模板自身数值。
+
+// Natural Earth 的省份属性里没有地形字段，这里按省份 id 做确定性合成：
+// 以平原为主，掺入丘陵/森林/山地/沙漠/苔原，让地形防御、移动代价与
+// 地形科技真正起作用（合成地形，不代表真实地貌）。
+const TERRAIN_POOL = [
+    { terrain: "plains", weight: 52 },
+    { terrain: "hills", weight: 14 },
+    { terrain: "forest", weight: 14 },
+    { terrain: "desert", weight: 8 },
+    { terrain: "mountain", weight: 6 },
+    { terrain: "tundra", weight: 6 },
+];
+const TERRAIN_TOTAL = TERRAIN_POOL.reduce((sum, t) => sum + t.weight, 0);
+
+function terrainOf(id) {
+    let h = (id * 2654435761) >>> 0;
+    let r = h % TERRAIN_TOTAL;
+    for (const t of TERRAIN_POOL) {
+        r -= t.weight;
+        if (r < 0) return t.terrain;
+    }
+    return "plains";
+}
 
 const template = JSON.parse(readFileSync(TEMPLATE_PATH, "utf8"));
 const index = JSON.parse(readFileSync(INDEX_PATH, "utf8"));
@@ -89,9 +112,10 @@ const ownedBy = new Map(); // tag -> 省份 id[]
 
 for (const m of Object.values(index.meta).sort((a, b) => a.id - b.id)) {
     const id = m.id;
-    const p = manualProvinces.get(id)
-        ? { ...manualProvinces.get(id) }
-        : { id, ...DEFAULT_PROVINCE };
+    const manual = manualProvinces.get(id);
+    const p = manual
+        ? { ...manual, coastal: manual.coastal ?? !!m.coastal }
+        : { id, terrain: terrainOf(id), coastal: !!m.coastal, supply: 0.5, infrastructure: 2 };
     const tag = manualOwners.get(id) || tagOf(m.owner || "UNK");
     provinces.push(p);
     owners[id] = tag;

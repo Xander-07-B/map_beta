@@ -11,6 +11,8 @@ const Game = {
     playerTag: null,       // 玩家国家 tag（GER/POL/FRA）
     selectedProvince: null,
     selectedArmy: null,    // 选中的部队 id（地图上点击相邻省份即可移动）
+    selectedAir: null,     // 选中的空军群 id
+    selectedFleet: null,   // 选中的舰队 id
     tool: 'move',
     _mapIndex: null,       // 地图 index.json（省份名称/邻接/bbox）
 
@@ -27,9 +29,24 @@ const Game = {
         const l10nData = await fetch('data/l10n/zh.json').then(r => r.json());
         loadL10n(l10nData, 'zh');
 
+        // 存档读写接口：模拟层不直接依赖 localStorage，由渲染层注入
+        const storage = {
+            read: (key) => {
+                try { return localStorage.getItem(key); } catch { return null; }
+            },
+            write: (key, value) => {
+                try {
+                    localStorage.setItem(key, value);
+                } catch (err) {
+                    throw new Error('存档写入失败：本地存储空间不足或被浏览器策略拒绝');
+                }
+            },
+        };
+
         // 加载并校验剧本
         this.campaign = await Campaign.create('1936', {
             fetchJson: async (url) => (await fetch(url)).json(),
+            storage,
         });
         return this.campaign;
     },
@@ -47,6 +64,8 @@ const Game = {
 
         this.selectedProvince = null;
         this.selectedArmy = null;
+        this.selectedAir = null;
+        this.selectedFleet = null;
         this.tool = 'move';
 
         // 归属就绪，让地图填充缓存失效并重绘
@@ -55,6 +74,7 @@ const Game = {
         // 模拟层事件 → UI
         this.campaign.on('victory', ({ victory }) => { if (UI) UI.showVictory(victory); });
         this.campaign.on('event', ({ eventId, event }) => { if (UI) UI.showCampaignEvent(eventId, event); });
+        this.campaign.on('peace', ({ offer }) => { if (UI) UI.showPeaceConference(offer); });
 
         return this.campaign;
     },
@@ -142,7 +162,9 @@ const Game = {
             controller: this.ownerOf(id),
             supply: st?.supply ?? 0,
             infrastructure: st?.infrastructure ?? 0,
+            fortLevel: st?.fortLevel ?? 0,
             damage: st?.damage ?? 0,
+            coastal: st?.coastal ?? !!meta?.coastal,
             bbox: meta?.bbox,
             neighbors: this._mapIndex?.neighbors?.[String(id)]?.map(Number) ?? [],
         };
@@ -195,6 +217,15 @@ const Game = {
     get techs() { return this.campaign?.content?.techs || {}; },
     get divisions() { return this.campaign?.content?.divisions || {}; },
 
+    /** 省份所属的州（无则返回 null） */
+    stateOfProvince(provinceId) {
+        const states = this.state?.states || {};
+        for (const st of Object.values(states)) {
+            if (st.provinces.includes(provinceId)) return st;
+        }
+        return null;
+    },
+
     /** 该国已解锁、可部署的部队模板 id 列表 */
     availableTemplates(tag) {
         const c = this.countryById(tag);
@@ -228,6 +259,88 @@ const Game = {
         const tpl = this.divisions[templateId];
         if (!tpl) return null;
         return { manpower: tpl.cost.manpower, equipment: tpl.cost.equipment || {} };
+    },
+
+    // ===================== 空军 / 海军 =====================
+
+    get aircraft() { return this.campaign?.content?.aircraft || {}; },
+    get ships() { return this.campaign?.content?.ships || {}; },
+
+    airForceById(id) { return this.state?.airForces?.find((g) => g.id === id) || null; },
+    airForcesOf(tag) { return (this.state?.airForces || []).filter((g) => g.owner === tag); },
+    airForcesIn(provinceId) { return (this.state?.airForces || []).filter((g) => g.provinceId === provinceId); },
+    allAirForces() { return this.state?.airForces || []; },
+
+    fleetById(id) { return this.state?.fleets?.find((f) => f.id === id) || null; },
+    fleetsOf(tag) { return (this.state?.fleets || []).filter((f) => f.owner === tag); },
+    fleetsIn(provinceId) { return (this.state?.fleets || []).filter((f) => f.provinceId === provinceId); },
+    allFleets() { return this.state?.fleets || []; },
+
+    /** 该国已解锁、可部署的飞机型号 */
+    availableAir(tag) {
+        const c = this.countryById(tag);
+        if (!c) return [];
+        return (c.unlockedAir || []).filter((id) => this.aircraft[id]);
+    },
+
+    /** 该国已解锁、可部署的舰种 */
+    availableShips(tag) {
+        const c = this.countryById(tag);
+        if (!c) return [];
+        return (c.unlockedShips || []).filter((id) => this.ships[id]);
+    },
+
+    /** 飞机型号的装备消耗（面板展示用） */
+    aircraftCost(templateId) {
+        const tpl = this.aircraft[templateId];
+        if (!tpl) return null;
+        return { equipment: tpl.cost.equipment || {}, planes: tpl.planes };
+    },
+
+    /** 舰种的装备消耗（面板展示用） */
+    shipCost(templateId) {
+        const tpl = this.ships[templateId];
+        if (!tpl) return null;
+        return { equipment: tpl.cost.equipment || {}, ships: tpl.ships };
+    },
+
+    /** 目标省份是否为沿海（舰队部署前的按钮禁用态） */
+    isCoastal(id) {
+        return !!this.provinceById(id)?.coastal;
+    },
+
+    // ===================== 外交查询 =====================
+
+    factionOf(tag) { return window.Core.factionOf(this.state, tag); },
+    factionById(id) { return window.Core.factionById(this.state, id); },
+    factionMembers(tag) { return window.Core.factionMembers(this.state, tag); },
+    factionLeader(factionId) { return window.Core.factionLeader(this.state, factionId); },
+
+    /** 与该国交战的所有国家（含阵营战争） */
+    warOpponents(tag) { return window.Core.warOpponents(this.state, tag); },
+
+    peaceOffers() { return this.state?.peaceOffers || []; },
+    factionInvites() { return this.state?.factionInvites || []; },
+    lendLeaseOf(tag) { return this.state?.lendLease?.[tag] || {}; },
+
+    /** 该国进行中的战争（含战争目标与分数） */
+    warsOf(tag) {
+        return (this.state?.wars || []).filter((w) =>
+            w.status !== 'ended' &&
+            ((w.alliesA || [w.a]).includes(tag) || (w.alliesB || [w.b]).includes(tag)));
+    },
+
+    /** 最近一次空中 / 海上结算结果（面板展示） */
+    get lastAirNavy() { return this.campaign?.lastAirNavy || null; },
+
+    /** 补给网络（省份 → 补给系数），面板展示部队是否被切断 */
+    supplyMap() { return this.campaign?._supply || new Map(); },
+
+    /** 部队的补给系数（0 = 被切断） */
+    supplyFactor(provinceId) {
+        const map = this.supplyMap();
+        if (map.size === 0) return null;
+        return map.get(provinceId) ?? 0;
     },
 
     // ===================== 国策 / 决议可用性（UI 用，与 validate 同源） =====================
@@ -264,48 +377,114 @@ const Game = {
 
     selectProvince(id) {
         this.selectedProvince = id;
-        // 切到不包含已选部队的省份时，取消部队选择（移动流程由 MapView 单独处理）
-        if (this.selectedArmy != null) {
-            const army = this.armyById(this.selectedArmy);
-            if (!army || army.provinceId !== id) this.selectedArmy = null;
-        }
+        // 切到不包含已选单位的省份时，取消单位选择（移动流程由 MapView 单独处理）
+        this.clearStaleSelection();
         if (UI) UI.updateProvincePanel();
         if (MapView) MapView.requestDraw();
+    },
+
+    /** 选中态与实际单位位置不同步时清空（省份切换、单位被消灭、读档后） */
+    clearStaleSelection() {
+        if (this.selectedArmy != null) {
+            const army = this.armyById(this.selectedArmy);
+            if (!army || army.strength <= 0 || army.provinceId !== this.selectedProvince) this.selectedArmy = null;
+        }
+        if (this.selectedAir != null) {
+            const g = this.airForceById(this.selectedAir);
+            if (!g || g.planes <= 0 || g.provinceId !== this.selectedProvince) this.selectedAir = null;
+        }
+        if (this.selectedFleet != null) {
+            const f = this.fleetById(this.selectedFleet);
+            if (!f || f.ships <= 0 || f.provinceId !== this.selectedProvince) this.selectedFleet = null;
+        }
     },
 
     /** 选中一支部队（地图标记 / 省份速览卡 / 部队面板共用；只允许玩家自己的部队） */
     selectArmy(id) {
         const army = this.armyById(id);
-        if (!army) return;
+        if (!army || army.strength <= 0) return;
         if (this.playerTag && army.owner !== this.playerTag) return;
         this.selectedArmy = id;
+        this.selectedAir = null;
+        this.selectedFleet = null;
         this.selectedProvince = army.provinceId;
         if (UI) UI.updateProvincePanel();
         if (MapView) MapView.requestDraw();
     },
 
-    /** 取消部队选择（右键 / Esc） */
-    clearArmySelection() {
-        if (this.selectedArmy == null) return;
+    /** 选中一个空军群 */
+    selectAirForce(id) {
+        const g = this.airForceById(id);
+        if (!g || g.planes <= 0) return;
+        if (this.playerTag && g.owner !== this.playerTag) return;
+        this.selectedAir = id;
         this.selectedArmy = null;
+        this.selectedFleet = null;
+        this.selectedProvince = g.provinceId;
         if (UI) UI.updateProvincePanel();
         if (MapView) MapView.requestDraw();
     },
 
+    /** 选中一支舰队 */
+    selectFleet(id) {
+        const f = this.fleetById(id);
+        if (!f || f.ships <= 0) return;
+        if (this.playerTag && f.owner !== this.playerTag) return;
+        this.selectedFleet = id;
+        this.selectedArmy = null;
+        this.selectedAir = null;
+        this.selectedProvince = f.provinceId;
+        if (UI) UI.updateProvincePanel();
+        if (MapView) MapView.requestDraw();
+    },
+
+    /** 取消单位选择（右键 / Esc） */
+    clearArmySelection() {
+        this.selectedArmy = null;
+        this.selectedAir = null;
+        this.selectedFleet = null;
+        if (UI) UI.updateProvincePanel();
+        if (MapView) MapView.requestDraw();
+    },
+
+    /** 当前选中的单位类型与 id：'army' | 'air' | 'fleet' | null */
+    get selectedUnit() {
+        if (this.selectedArmy != null) return { kind: 'army', id: this.selectedArmy };
+        if (this.selectedAir != null) return { kind: 'air', id: this.selectedAir };
+        if (this.selectedFleet != null) return { kind: 'fleet', id: this.selectedFleet };
+        return null;
+    },
+
+    /** 按类型取单位实体 */
+    unitByKind(kind, id) {
+        if (kind === 'army') return this.armyById(id);
+        if (kind === 'air') return this.airForceById(id);
+        if (kind === 'fleet') return this.fleetById(id);
+        return null;
+    },
+
+    /** 单位移动命令的构造（与命令校验同源） */
+    moveCommandFor(kind, id, to, owner) {
+        if (kind === 'army') return { t: 'moveArmy', armyId: id, to, country: owner };
+        if (kind === 'air') return { t: 'moveAirForce', airId: id, to };
+        if (kind === 'fleet') return { t: 'moveFleet', fleetId: id, to };
+        return null;
+    },
+
     /**
-     * 已选中部队的可移动方向（地图移动范围、面板下拉共用）。
+     * 已选中单位的可移动方向（地图移动范围、面板下拉共用）。
      * 返回 [{ id, name, controller, ok, err }]，ok 与命令校验同源。
      */
-    moveOptionsFor(armyId) {
-        const army = this.armyById(armyId);
-        if (!army) return [];
-        const ids = this._mapIndex?.neighbors?.[String(army.provinceId)] || [];
-        return ids.map(Number).map((id) => {
-            const p = this.provinceById(id);
-            const blocked = this.canCommand({ t: 'moveArmy', armyId: army.id, to: id, country: army.owner });
+    moveOptionsFor(id, kind = 'army') {
+        const item = this.unitByKind(kind, id);
+        if (!item) return [];
+        const ids = this._mapIndex?.neighbors?.[String(item.provinceId)] || [];
+        return ids.map(Number).map((pid) => {
+            const p = this.provinceById(pid);
+            const blocked = this.canCommand(this.moveCommandFor(kind, item.id, pid, item.owner));
             return {
-                id,
-                name: p?.name || String(id),
+                id: pid,
+                name: p?.name || String(pid),
                 controller: p?.controller ?? null,
                 ok: !blocked,
                 err: blocked?.err || null,
@@ -314,22 +493,30 @@ const Game = {
     },
 
     /**
-     * 移动已选中部队。成功后保留选中态，便于连续点击推进。
+     * 移动已选中单位（部队 / 空军 / 舰队通用）。成功后保留选中态，便于连续点击推进。
      * @returns 命令结果 { ok, err? }
      */
-    moveSelectedArmy(to) {
-        const armyId = this.selectedArmy;
-        if (armyId == null) return { ok: false, err: '未选中部队' };
-        const army = this.armyById(armyId);
-        if (!army) {
-            this.selectedArmy = null;
-            return { ok: false, err: '部队不存在' };
+    moveSelected(kind, to) {
+        const id = kind === 'army' ? this.selectedArmy : kind === 'air' ? this.selectedAir : this.selectedFleet;
+        if (id == null) return { ok: false, err: '未选中单位' };
+        const item = this.unitByKind(kind, id);
+        if (!item) {
+            if (kind === 'army') this.selectedArmy = null;
+            if (kind === 'air') this.selectedAir = null;
+            if (kind === 'fleet') this.selectedFleet = null;
+            return { ok: false, err: '单位不存在' };
         }
-        const r = this.command({ t: 'moveArmy', armyId, to, country: army.owner });
+        const r = this.command(this.moveCommandFor(kind, id, to, item.owner));
         if (r.ok) {
-            // 入场战斗可能把这支部队打光，销毁后不再保留选中态
-            const after = this.armyById(armyId);
-            if (!after || after.strength <= 0) this.selectedArmy = null;
+            // 入场战斗/空战可能把该单位打光，销毁后不再保留选中态
+            const after = this.unitByKind(kind, id);
+            const alive = kind === 'army' ? after && after.strength > 0
+                : kind === 'air' ? after && after.planes > 0 : after && after.ships > 0;
+            if (!alive) {
+                if (kind === 'army') this.selectedArmy = null;
+                if (kind === 'air') this.selectedAir = null;
+                if (kind === 'fleet') this.selectedFleet = null;
+            }
             this.selectedProvince = to;
             if (UI) UI.updateProvincePanel();
             if (MapView) MapView.requestDraw();
@@ -337,14 +524,47 @@ const Game = {
         return r;
     },
 
+    /** 移动已选中部队（部队面板与地图共用） */
+    moveSelectedArmy(to) {
+        return this.moveSelected('army', to);
+    },
+
+    /**
+     * 让一支部队沿最短路径向最近的敌方省份推进一格。
+     * 与「进攻」指令同源（指令由每 tick 的结算自动执行，这里是手动单步）。
+     */
+    advanceArmyOneStep(armyId) {
+        const army = this.armyById(armyId);
+        if (!army || army.strength <= 0) return { ok: false, err: '部队不存在' };
+        const to = window.Core.nextStepTowardEnemy(this.state, this.campaign.ctx(), army.provinceId, army.owner);
+        if (to == null) return { ok: false, err: '附近没有可推进的敌方方向' };
+        return this.command({ t: 'moveArmy', armyId, to, country: army.owner });
+    },
+
     // ===================== 存档 / 读取 =====================
 
     save() {
         if (!this.campaign) return false;
+        // 手动存档用全量快照：最稳妥，读档路径最简单
         const data = this.campaign.save();
         data.meta.playerTag = this.playerTag;
         // JSON 序列化会丢失 TypedArray：rngState 转普通数组，读档时由 Rng.loadState 兼容恢复
         if (data.snapshot.rngState) data.snapshot.rngState = Array.from(data.snapshot.rngState);
+        try {
+            localStorage.setItem('hoi4_campaign_save', JSON.stringify(data));
+            return true;
+        } catch {
+            return false;
+        }
+    },
+
+    /** 增量存档：只保存自基线以来变化过的字段（菜单里的可选存档方式） */
+    saveIncremental() {
+        if (!this.campaign) return false;
+        const data = this.campaign.saveIncremental();
+        data.meta.playerTag = this.playerTag;
+        if (data.snapshot?.rngState) data.snapshot.rngState = Array.from(data.snapshot.rngState);
+        if (data.base?.snapshot?.rngState) data.base.snapshot.rngState = Array.from(data.base.snapshot.rngState);
         try {
             localStorage.setItem('hoi4_campaign_save', JSON.stringify(data));
             return true;
@@ -363,7 +583,12 @@ const Game = {
             // 读档后旧的选中引用可能已不存在
             this.selectedProvince = null;
             this.selectedArmy = null;
+            this.selectedAir = null;
+            this.selectedFleet = null;
             if (MapView.invalidateFills) MapView.invalidateFills();
+            // 读档时若已有待回应的和平提议，直接呈现（事件只在产生当 tick 抛出）
+            const pending = this.state?.peaceOffers?.find((o) => o.to === this.playerTag);
+            if (pending && UI) UI.showPeaceConference(pending);
             return true;
         } catch {
             return false;
@@ -371,7 +596,34 @@ const Game = {
     },
 
     hasSave() {
-        return !!localStorage.getItem('hoi4_campaign_save');
+        try {
+            return !!localStorage.getItem('hoi4_campaign_save');
+        } catch {
+            return false;
+        }
+    },
+
+    hasAutosave() {
+        try {
+            return !!localStorage.getItem('hoi4_campaign_autosave');
+        } catch {
+            return false;
+        }
+    },
+
+    /** 读取自动存档（供「继续游戏」的备份入口使用） */
+    loadAutosave() {
+        try {
+            const raw = localStorage.getItem('hoi4_campaign_autosave');
+            if (!raw || !this.campaign) return false;
+            if (!this.campaign.restore(JSON.parse(raw))) return false;
+            this.selectedProvince = null;
+            this.selectedArmy = null;
+            if (MapView.invalidateFills) MapView.invalidateFills();
+            return true;
+        } catch {
+            return false;
+        }
     },
 };
 

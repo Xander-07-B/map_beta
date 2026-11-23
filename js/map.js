@@ -113,6 +113,7 @@ const MapView = {
 
     // === 交互状态 ===
     hoverProvince: null, hoverCountry: null, hoverArmyId: null,
+    hoverAirId: null, hoverFleetId: null,
     isDragging: false, isPinching: false,
     dragStartX: 0, dragStartY: 0, lastMouseX: 0, lastMouseY: 0,
     pinchStartDist: 0, pinchStartScale: 1, pinchMid: { x: 0, y: 0 },
@@ -601,18 +602,33 @@ const MapView = {
     /**
      * 同省多支部队时的屏幕偏移：围绕省份中心排成一圈，
      * 使开局的多支部队都能看见并分别点选（否则会完全重叠）。
+     * 空军 / 舰队标记共用同一套排布逻辑。
      */
-    armyScreenOffset(army) {
-        const list = this.game.armiesIn(army.provinceId).filter((a) => a.strength > 0);
+    markerScreenOffset(list, item) {
         const n = list.length;
         if (n <= 1) return { x: 0, y: 0 };
-        const i = Math.max(0, list.findIndex((a) => a.id === army.id));
+        const i = Math.max(0, list.findIndex((a) => a.id === item.id));
         const ring = Math.floor(i / 8);
         const k = i % 8;
         const count = Math.min(8, n - ring * 8);
         const radius = 9 + ring * 8;
         const angle = -Math.PI / 2 + (k / count) * Math.PI * 2;
         return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+    },
+
+    armyScreenOffset(army) {
+        return this.markerScreenOffset(
+            this.game.armiesIn(army.provinceId).filter((a) => a.strength > 0), army);
+    },
+
+    airScreenOffset(group) {
+        return this.markerScreenOffset(
+            this.game.airForcesIn(group.provinceId).filter((g) => g.planes > 0), group);
+    },
+
+    fleetScreenOffset(fleet) {
+        return this.markerScreenOffset(
+            this.game.fleetsIn(fleet.provinceId).filter((f) => f.ships > 0), fleet);
     },
 
     /**
@@ -633,6 +649,44 @@ const MapView = {
             const d = Math.hypot(sx - screenX, sy - screenY);
             const r = this.armyScreenRadius(a) + 6;
             if (d <= r && d < bestDist) { best = a; bestDist = d; }
+        }
+        return best;
+    },
+
+    /** 拾取空军群标记（飞机图标，半径较小） */
+    findAirAt(screenX, screenY) {
+        if (!this.game || !this.paths) return null;
+        let best = null;
+        let bestDist = Infinity;
+        for (const g of this.game.allAirForces()) {
+            if (g.planes <= 0) continue;
+            const center = this.provinceCenter(g.provinceId);
+            if (!center) continue;
+            const off = this.airScreenOffset(g);
+            const sx = center.x * this.scale + this.offsetX + off.x;
+            const sy = center.y * this.scale + this.offsetY + off.y;
+            const d = Math.hypot(sx - screenX, sy - screenY);
+            const r = 10;
+            if (d <= r && d < bestDist) { best = g; bestDist = d; }
+        }
+        return best;
+    },
+
+    /** 拾取舰队标记（舰锚图标） */
+    findFleetAt(screenX, screenY) {
+        if (!this.game || !this.paths) return null;
+        let best = null;
+        let bestDist = Infinity;
+        for (const f of this.game.allFleets()) {
+            if (f.ships <= 0) continue;
+            const center = this.provinceCenter(f.provinceId);
+            if (!center) continue;
+            const off = this.fleetScreenOffset(f);
+            const sx = center.x * this.scale + this.offsetX + off.x;
+            const sy = center.y * this.scale + this.offsetY + off.y;
+            const d = Math.hypot(sx - screenX, sy - screenY);
+            const r = 11;
+            if (d <= r && d < bestDist) { best = f; bestDist = d; }
         }
         return best;
     },
@@ -872,6 +926,7 @@ const MapView = {
         this.drawFrontlines(ctx);
         this.drawArmyMoveRange(ctx);
         this.drawArmies(ctx);
+        this.drawAirNavy(ctx);
         if (countryMode) this.drawCountryHover(ctx);
         else this.drawHighlights(ctx);
         ctx.restore();
@@ -1098,14 +1153,30 @@ const MapView = {
     },
 
     /**
-     * 选中部队的可移动范围：合法目标省份绿色填充 + 虚线描边 + 指向箭头，
+     * 选中部队 / 空军 / 舰队的可移动范围：合法目标省份绿色填充 + 虚线描边 + 指向箭头，
      * 不可移动的相邻省份淡红色提示。只在省份层级显示（国家层级没有省界可参照）。
      */
     drawArmyMoveRange(ctx) {
-        if (this.scale < this.LOD_COUNTRY || this.game.selectedArmy == null) return;
-        const army = this.game.armyById(this.game.selectedArmy);
-        if (!army || army.strength <= 0) return;
-        const opts = this.game.moveOptionsFor(army.id);
+        if (this.scale < this.LOD_COUNTRY) return;
+        const game = this.game;
+        // 选中对象：部队 > 空军 > 舰队
+        let kind = null;
+        let id = null;
+        let fromProvince = null;
+        if (game.selectedArmy != null) { kind = 'army'; id = game.selectedArmy; }
+        else if (game.selectedAir != null) { kind = 'air'; id = game.selectedAir; }
+        else if (game.selectedFleet != null) { kind = 'fleet'; id = game.selectedFleet; }
+        if (id == null) return;
+
+        const item = kind === 'army' ? game.armyById(id)
+            : kind === 'air' ? game.airForceById(id) : game.fleetById(id);
+        if (!item) return;
+        if (kind === 'army' && item.strength <= 0) return;
+        if (kind === 'air' && item.planes <= 0) return;
+        if (kind === 'fleet' && item.ships <= 0) return;
+        fromProvince = item.provinceId;
+
+        const opts = this.game.moveOptionsFor(id, kind);
         if (opts.length === 0) return;
 
         for (const o of opts) {
@@ -1125,8 +1196,8 @@ const MapView = {
         }
         ctx.setLineDash([]);
 
-        // 箭头：从部队所在省中心指向每个可移动省份中心
-        const from = this.provinceCenter(army.provinceId);
+        // 箭头：从选中单位所在省中心指向每个可移动省份中心
+        const from = this.provinceCenter(fromProvince);
         if (!from) return;
         ctx.strokeStyle = 'rgba(251, 191, 36, 0.85)';
         ctx.fillStyle = 'rgba(251, 191, 36, 0.85)';
@@ -1139,7 +1210,7 @@ const MapView = {
             const dy = to.y - from.y;
             const len = Math.hypot(dx, dy);
             if (len < 1e-6) continue;
-            // 两端留白，避免箭头压住部队标记和省份中心
+            // 两端留白，避免箭头压住单位标记和省份中心
             const pad = Math.min(len * 0.3, 14 / this.scale);
             const sx = from.x + (dx / len) * pad;
             const sy = from.y + (dy / len) * pad;
@@ -1223,6 +1294,95 @@ const MapView = {
                 ctx.font = `bold ${9 / this.scale}px sans-serif`;
                 ctx.textAlign = 'center';
                 ctx.fillText(Math.round(a.strength), cx, cy + 3 / this.scale);
+            }
+        }
+    },
+
+    /**
+     * 空军与舰队标记：
+     * 空军用飞机图标（同省多群环形排布），舰队用舰锚图标，均标注架数/舰数。
+     * 选中态用金色外圈高亮，与部队标记一致。
+     */
+    drawAirNavy(ctx) {
+        const game = this.game;
+        if (!game) return;
+        const at = (provinceId) => {
+            const b = this.bbox.get(provinceId);
+            if (!b) return null;
+            return { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+        };
+        const ownerColor = (tag) => {
+            const owner = game.countryById(tag);
+            return owner ? this.themeFillColor(owner.color) : '#fff';
+        };
+        const font = `bold ${9 / this.scale}px sans-serif`;
+
+        // 空军
+        for (const g of game.allAirForces()) {
+            if (g.planes <= 0) continue;
+            const p = at(g.provinceId);
+            if (!p) continue;
+            const off = this.airScreenOffset(g);
+            const cx = p.x + off.x / this.scale;
+            const cy = p.y + off.y / this.scale;
+            const r = 7 / this.scale;
+            ctx.fillStyle = ownerColor(g.owner);
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1.2 / this.scale;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - r);
+            ctx.lineTo(cx + r, cy + r);
+            ctx.lineTo(cx - r, cy + r);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            if (game.selectedAir === g.id) {
+                ctx.beginPath();
+                ctx.arc(cx, cy, r + 3 / this.scale, 0, Math.PI * 2);
+                ctx.strokeStyle = '#fbbf24';
+                ctx.lineWidth = 2.5 / this.scale;
+                ctx.stroke();
+            }
+            if (this.scale > 0.5) {
+                ctx.fillStyle = this.armyTextColor;
+                ctx.font = font;
+                ctx.textAlign = 'center';
+                ctx.fillText(String(g.planes), cx, cy + r + 9 / this.scale);
+            }
+        }
+
+        // 舰队
+        for (const f of game.allFleets()) {
+            if (f.ships <= 0) continue;
+            const p = at(f.provinceId);
+            if (!p) continue;
+            const off = this.fleetScreenOffset(f);
+            const cx = p.x + off.x / this.scale;
+            const cy = p.y + off.y / this.scale;
+            const r = 8 / this.scale;
+            ctx.fillStyle = ownerColor(f.owner);
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1.2 / this.scale;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - r);
+            ctx.lineTo(cx + r, cy);
+            ctx.lineTo(cx, cy + r);
+            ctx.lineTo(cx - r, cy);
+            ctx.closePath();
+            ctx.fill();
+            ctx.stroke();
+            if (game.selectedFleet === f.id) {
+                ctx.beginPath();
+                ctx.arc(cx, cy, r + 3 / this.scale, 0, Math.PI * 2);
+                ctx.strokeStyle = '#fbbf24';
+                ctx.lineWidth = 2.5 / this.scale;
+                ctx.stroke();
+            }
+            if (this.scale > 0.5) {
+                ctx.fillStyle = this.armyTextColor;
+                ctx.font = font;
+                ctx.textAlign = 'center';
+                ctx.fillText(String(f.ships), cx, cy + r + 9 / this.scale);
             }
         }
     },
@@ -1325,6 +1485,8 @@ const MapView = {
             this.hoverProvince = null;
             this.hoverCountry = null;
             this.hoverArmyId = null;
+            this.hoverAirId = null;
+            this.hoverFleetId = null;
             this.hideTooltip();
         });
         c.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
@@ -1394,6 +1556,23 @@ const MapView = {
             return;
         }
 
+        // 空军 / 舰队标记同样任意缩放层级可见
+        const airHover = this.findAirAt(pos.x, pos.y);
+        const fleetHover = airHover ? null : this.findFleetAt(pos.x, pos.y);
+        if ((airHover ? airHover.id : null) !== this.hoverAirId ||
+            (fleetHover ? fleetHover.id : null) !== this.hoverFleetId) {
+            this.hoverAirId = airHover ? airHover.id : null;
+            this.hoverFleetId = fleetHover ? fleetHover.id : null;
+            this.requestDraw();
+        }
+        if (airHover || fleetHover) {
+            this.hoverCountry = null;
+            this.hoverProvince = null;
+            this.showAirNavyTooltip(airHover || fleetHover, pos);
+            this.canvas.style.cursor = 'pointer';
+            return;
+        }
+
         // 低缩放只画国家：按国家拾取，避免提示未显示的省份
         if (this.scale < this.LOD_COUNTRY) {
             const prev = this.hoverCountry;
@@ -1436,22 +1615,39 @@ const MapView = {
 
     /**
      * 点击/轻触的统一处理：
-     *   1) 点到我方部队标记 → 选中该部队（任意缩放层级）；
-     *   2) 已选中部队且点到相邻省份 → 移动（保持选中，可连续推进）；
+     *   1) 点到我方部队 / 空军 / 舰队标记 → 选中该单位（任意缩放层级）；
+     *   2) 已选中单位且点到相邻省份 → 移动（保持选中，可连续推进）；
      *   3) 否则选中省份查看。
      */
     activateAt(pos) {
         if (!this.ready || !this.game) return;
+        const zoomTo = (provinceId) => {
+            // 在国家级视野选中单位时自动下钻到省份层级，否则目标省份不可点
+            if (this.scale < this.LOD_COUNTRY) {
+                const c = this.provinceCenter(provinceId);
+                if (c) this.centerOn(c.x, c.y, this.LOD_COUNTRY + 0.4);
+            }
+        };
+
         const armyHit = this.findArmyAt(pos.x, pos.y);
         if (armyHit && armyHit.owner === this.game.playerTag) {
             this.game.selectArmy(armyHit.id);
-            // 在国家级视野选中部队时自动下钻到省份层级，否则目标省份不可点
-            if (this.scale < this.LOD_COUNTRY) {
-                const c = this.provinceCenter(armyHit.provinceId);
-                if (c) this.centerOn(c.x, c.y, this.LOD_COUNTRY + 0.4);
-            }
+            zoomTo(armyHit.provinceId);
             return;
         }
+        const airHit = this.findAirAt(pos.x, pos.y);
+        if (airHit && airHit.owner === this.game.playerTag) {
+            this.game.selectAirForce(airHit.id);
+            zoomTo(airHit.provinceId);
+            return;
+        }
+        const fleetHit = this.findFleetAt(pos.x, pos.y);
+        if (fleetHit && fleetHit.owner === this.game.playerTag) {
+            this.game.selectFleet(fleetHit.id);
+            zoomTo(fleetHit.provinceId);
+            return;
+        }
+
         // 国家级 LOD 下省份未显示，不选中隐藏的省份
         if (this.scale < this.LOD_COUNTRY) return;
 
@@ -1461,10 +1657,15 @@ const MapView = {
             this.game.selectProvince(null);
             return;
         }
-        if (this.game.selectedArmy != null) {
-            const army = this.game.armyById(this.game.selectedArmy);
-            if (army && prov.id !== army.provinceId && this.game.isAdjacent(army.provinceId, prov.id)) {
-                const r = this.game.moveSelectedArmy(prov.id);
+        // 已选中单位时，点相邻省份即移动（部队 / 空军 / 舰队通用）
+        const sel = this.game.selectedArmy != null ? ['army', this.game.selectedArmy]
+            : this.game.selectedAir != null ? ['air', this.game.selectedAir]
+                : this.game.selectedFleet != null ? ['fleet', this.game.selectedFleet] : null;
+        if (sel) {
+            const item = sel[0] === 'army' ? this.game.armyById(sel[1])
+                : sel[0] === 'air' ? this.game.airForceById(sel[1]) : this.game.fleetById(sel[1]);
+            if (item && prov.id !== item.provinceId && this.game.isAdjacent(item.provinceId, prov.id)) {
+                const r = this.game.moveSelected(sel[0], prov.id);
                 if (!r.ok && typeof UI !== 'undefined' && UI) UI.notify(r);
                 return;
             }
@@ -1486,6 +1687,8 @@ const MapView = {
         this.hoverProvince = null;
         this.hoverCountry = null;
         this.hoverArmyId = null;
+        this.hoverAirId = null;
+        this.hoverFleetId = null;
         this.hideTooltip();
         this.clampCamera();
         this.requestDraw();
@@ -1647,6 +1850,23 @@ const MapView = {
             <br/>${prov ? prov.name : army.provinceId} · ${owner}
             <br/>兵力 ${Math.round(army.strength)} · 组织度 ${Math.round(army.org * 100)}%
             ${mine ? '<br/><span style="color:#7dd3fc">点击选中该部队</span>' : ''}`;
+        tip.style.display = 'block';
+        tip.style.left = (pos.x + 14) + 'px';
+        tip.style.top = (pos.y + 14) + 'px';
+    },
+
+    /** 空军 / 舰队标记的悬停提示 */
+    showAirNavyTooltip(unit, pos) {
+        const tip = this.tooltipEl();
+        const isAir = !!unit.planes;
+        const tpl = isAir ? this.game.aircraft?.[unit.template] : this.game.ships?.[unit.template];
+        const prov = this.game.provinceById(unit.provinceId);
+        const mine = unit.owner === this.game.playerTag;
+        const owner = mine ? (isAir ? '我方空军' : '我方舰队') : `敌方：${this.game.countryDisplayName(unit.owner)}`;
+        tip.innerHTML = `<b>${tpl ? `${tpl.icon} ${tpl.name}` : unit.template}</b>
+            <br/>${prov ? prov.name : unit.provinceId} · ${owner}
+            <br/>${isAir ? `飞机 ${Math.round(unit.planes)} 架` : `舰船 ${Math.round(unit.ships)} 艘`}
+            ${mine ? '<br/><span style="color:#7dd3fc">点击选中</span>' : ''}`;
         tip.style.display = 'block';
         tip.style.left = (pos.x + 14) + 'px';
         tip.style.top = (pos.y + 14) + 'px';

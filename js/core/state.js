@@ -41,6 +41,8 @@ const DEFAULT_COUNTRY = {
     bonuses: { division: {}, factory: {}, resource: {}, misc: {} },
     unlockedTemplates: [],
     unlockedEquipment: [],
+    unlockedAir: [],          // 已解锁的飞机型号
+    unlockedShips: [],        // 已解锁的舰种
     warScore: 0,
 };
 
@@ -65,9 +67,12 @@ function createCountry(tag, def) {
         factory: { ...(def.bonuses?.factory || {}) },
         resource: { ...(def.bonuses?.resource || {}) },
         misc: { ...(def.bonuses?.misc || {}) },
+        terrain: { ...(def.bonuses?.terrain || {}) },
     };
     c.unlockedTemplates = [...(def.unlockedTemplates || [])];
     c.unlockedEquipment = [...(def.unlockedEquipment || [])];
+    c.unlockedAir = [...(def.unlockedAir || [])];
+    c.unlockedShips = [...(def.unlockedShips || [])];
     c.researchProgress = {};
     c.construction = [];
     c.production = [];
@@ -83,8 +88,10 @@ function createCountry(tag, def) {
  * @param {number} [opts.seed]
  * @param {Rng} [opts.rng] 已初始化的 PRNG（存档恢复时复用其状态）
  * @param {object} [opts.divisions] 部队模板（用于把剧本初始部队解析为实体）
+ * @param {object} [opts.aircraft] 飞机型号（用于把剧本初始空军解析为实体）
+ * @param {object} [opts.ships] 舰种（用于把剧本初始舰队解析为实体）
  */
-export function createWorldState({ scenario, seed = 0x1936, rng, divisions }) {
+export function createWorldState({ scenario, seed = 0x1936, rng, divisions, aircraft, ships }) {
     const r = rng || new Rng(seed);
 
     const s = {
@@ -99,8 +106,13 @@ export function createWorldState({ scenario, seed = 0x1936, rng, divisions }) {
         provinces: {},
         states: {},
         wars: [],
-        armies: [],          // 军队实体：{ id, owner, provinceId, template, strength, org, speed }
+        armies: [],          // 军队实体：{ id, owner, provinceId, template, strength, org, speed, order }
+        airForces: [],       // 空军群：{ id, owner, provinceId, template, planes, role }
+        fleets: [],          // 舰队：{ id, owner, provinceId, template, ships, speed, order }
         alliances: [],
+        factionInvites: [],    // 待处理的阵营邀请 { id, faction, from, to, tick }
+        peaceOffers: [],       // 待处理的和平提议 { id, warId, from, to, terms, tick }
+        lendLease: {},         // tag -> { 受援方 -> { amount, tick } }
         events: {
             enabled: [...(scenario.events?.enabled || [])],
             triggered: [],
@@ -116,6 +128,10 @@ export function createWorldState({ scenario, seed = 0x1936, rng, divisions }) {
         victory: null,      // { winner, tick, conditions }
         nextWarId: 1,
         nextArmyId: 1,
+        nextAirId: 1,
+        nextFleetId: 1,
+        nextInviteId: 1,
+        nextOfferId: 1,
         nextCmdSeq: 1,
     };
 
@@ -163,10 +179,44 @@ export function createWorldState({ scenario, seed = 0x1936, rng, divisions }) {
                 org: tpl.org ?? 1,
                 speed: tpl.speed,
                 experience: 0,
+                order: 'hold',
             });
         }
         // 已转为可指挥部队的驻军不再重复绘制
         if (c.garrison && init.province in c.garrison) delete c.garrison[init.province];
+    }
+
+    // 剧本初始空军：与初始陆军一样，开局即存在且可直接指挥
+    for (const init of scenario.initialAirForces || []) {
+        const ac = aircraft?.[init.template];
+        const country = s.countries[init.country];
+        if (!ac || !country || !s.provinces[init.province] || !Number.isFinite(init.count)) continue;
+        const groups = Math.max(1, Math.floor(init.count));
+        s.airForces.push({
+            id: s.nextAirId++,
+            owner: init.country,
+            provinceId: init.province,
+            template: init.template,
+            planes: Math.max(1, Math.floor(ac.planes * groups)),
+            role: ac.role,
+        });
+    }
+
+    // 剧本初始舰队
+    for (const init of scenario.initialFleets || []) {
+        const sh = ships?.[init.template];
+        const country = s.countries[init.country];
+        if (!sh || !country || !s.provinces[init.province] || !Number.isFinite(init.count)) continue;
+        const groups = Math.max(1, Math.floor(init.count));
+        s.fleets.push({
+            id: s.nextFleetId++,
+            owner: init.country,
+            provinceId: init.province,
+            template: init.template,
+            ships: Math.max(1, Math.floor(sh.ships * groups)),
+            speed: sh.speed ?? 3,
+            order: 'hold',
+        });
     }
 
     // 州
@@ -185,9 +235,15 @@ export function createWorldState({ scenario, seed = 0x1936, rng, divisions }) {
     }
     recomputeVictoryPoints(s);
 
-    // 阵营
+    // 阵营（首个成员为领袖）
     for (const a of scenario.alliances || []) {
-        s.alliances.push({ id: a.id, name: a.name || a.id, members: [...(a.members || [])] });
+        s.alliances.push({
+            id: a.id,
+            name: a.name || a.id,
+            members: [...(a.members || [])],
+            leader: (a.members || [])[0] || null,
+            invites: [],
+        });
     }
 
     // 剧本预设战争（标记态，无战斗结算）
@@ -200,6 +256,7 @@ export function createWorldState({ scenario, seed = 0x1936, rng, divisions }) {
             warScore: 0,
             scoreA: 0,
             scoreB: 0,
+            goals: [],
             status: 'active',
         });
         markAtWar(s, w.a, w.b);

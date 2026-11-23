@@ -8,6 +8,7 @@
 
 import { FP_SCALE, fpAddClamp01, orderedKeys } from './determinism.js';
 import { formatDate, parseDate, TICK_GAME_DAYS } from './clock.js';
+import { supplyFactorFor } from './supply.js';
 
 /** 全局经济默认值：剧本可用 economy 字段部分覆盖 */
 export const DEFAULT_ECONOMY = {
@@ -73,9 +74,11 @@ export function divisionBonus(c, type, stat) {
  *   airDefense / intelligence / nuclear
  */
 export function applyTechEffects(c, tech, ctx) {
-    const b = c.bonuses || (c.bonuses = { division: {}, factory: {}, resource: {}, misc: {} });
+    const b = c.bonuses || (c.bonuses = { division: {}, factory: {}, resource: {}, misc: {}, terrain: {} });
     c.unlockedTemplates || (c.unlockedTemplates = []);
     c.unlockedEquipment || (c.unlockedEquipment = []);
+    c.unlockedAir || (c.unlockedAir = []);
+    c.unlockedShips || (c.unlockedShips = []);
 
     for (const e of tech.effects || []) {
         if (e.divisionBonus) {
@@ -110,6 +113,16 @@ export function applyTechEffects(c, tech, ctx) {
             b.misc.airDefense = (b.misc.airDefense || 0) + e.airDefense;
         } else if (e.intelligence !== undefined) {
             b.misc.intelligence = (b.misc.intelligence || 0) + e.intelligence;
+        } else if (e.terrainDefense) {
+            // 地形防御修正：按地形累加（如山地作战 +0.5 山地防御）
+            b.terrain || (b.terrain = {});
+            for (const [terrain, val] of Object.entries(e.terrainDefense)) {
+                b.terrain[terrain] = (b.terrain[terrain] || 0) + val;
+            }
+        } else if (e.unlockAir && !c.unlockedAir.includes(e.unlockAir)) {
+            c.unlockedAir.push(e.unlockAir);
+        } else if (e.unlockShip && !c.unlockedShips.includes(e.unlockShip)) {
+            c.unlockedShips.push(e.unlockShip);
         } else if (e.nuclear) {
             c.flags.nuclear = true;
         }
@@ -164,6 +177,7 @@ function tickProductionLine(c, line, ctx, cap) {
 
     let produced = 0;
     line.progress = (line.progress || 0) + produce;
+    line.produced = (line.produced || 0) + produce;
     while (line.progress >= 1) {
         produced++;
         line.progress -= 1;
@@ -289,10 +303,25 @@ export function settleEconomy(s, ctx) {
             c.politicalPower = Math.min(eco.maxPoliticalPower, c.politicalPower + eco.ppGrowth * cap);
         }
 
-        // 7) 补给消耗（军队维持）
-        const armyCount = (s.armies || []).filter((a) => a.owner === tag).length;
-        if (armyCount > 0) {
-            const need = eco.supplyPerArmy * armyCount;
+        // 7) 补给消耗（军队维持）——按补给网络折算，被切断的部队不消耗补给
+        const forces = s.armies || [];
+        let supplyUnits = 0;
+        for (const a of forces) {
+            if (a.owner !== tag || a.strength <= 0) continue;
+            supplyUnits += Math.max(0, Math.min(1, supplyFactorFor(s, ctx, a.provinceId)));
+        }
+        for (const g of s.airForces || []) {
+            if (g.owner !== tag || g.planes <= 0) continue;
+            const tpl = ctx.aircraft?.[g.template];
+            supplyUnits += (tpl?.cost?.supplies || 0) * (g.planes / Math.max(1, tpl?.planes || 1));
+        }
+        for (const f of s.fleets || []) {
+            if (f.owner !== tag || f.ships <= 0) continue;
+            const tpl = ctx.ships?.[f.template];
+            supplyUnits += (tpl?.cost?.supplies || 0) * (f.ships / Math.max(1, tpl?.ships || 1));
+        }
+        if (supplyUnits > 0) {
+            const need = eco.supplyPerArmy * supplyUnits;
             const have = c.resources.supplies || 0;
             if (have >= need) {
                 c.resources.supplies = have - need;
