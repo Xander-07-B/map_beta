@@ -1,0 +1,148 @@
+{
+  "id": "1936",
+  "startDate": "1936-01-01",
+  "map": "world@v1",
+  "defaultPlayer": "GER",
+  "playable": ["GER", "POL", "FRA"],
+  "economy": {
+    "factoryBaseline": 20,
+    "income": { "steel": 3.0, "iron": 2.0, "oil": 1.0, "rubber": 0.6, "energy": 1.5, "aluminium": 0.8, "supplies": 2.5, "munitions": 1.2, "rare": 0.3 },
+    "manpowerGrowth": 0.0015,
+    "ppGrowth": 1.2
+  },
+  "countries": {
+    "GER": {
+      "name": "l10n.country.GER",
+      "flag": "🇩🇪",
+      "color": "#b8504a",
+      "ideology": "fascist",
+      "rulingParty": "NSDAP",
+      "leader": "l10n.leader.hitler",
+      "capital": 1159312769,
+      "population": 80000000,
+      "manpower": 68000000,
+      "politicalPower": 80,
+      "stability": 0.45,
+      "warSupport": 0.60,
+      "legitimacy": 0.70,
+      "resources": { "oil": 10, "steel": 40, "aluminium": 5 },
+      "equipment": { "infantry_weapon": 40, "artillery": 12 },
+      "civs": 20,
+      "mils": 12,
+      "docks": 4,
+      "buildings": { "infrastructure": 12, "radar": 2 },
+      "focusTree": "ger_focus_1936",
+      "researchSlots": 3,
+      "research": { "inf_weapons_1": 0 },
+      "relations": { "POL": -20, "FRA": -10 },
+      "faction": null,
+      "unlockedTemplates": ["infantry"]
+    },
+    "POL": {
+      "name": "l10n.country.POL",
+      "flag": "🇵🇱",
+      "color": "#4a7fa8",
+      "ideology": "neutral",
+      "capital": 1159314695,
+      "population": 35000000,
+      "manpower": 35000000,
+      "politicalPower": 30,
+      "stability": 0.50,
+      "warSupport": 0.50,
+      "legitimacy": 0.60,
+      "resources": { "steel": 12, "oil": 3 },
+      "equipment": { "infantry_weapon": 24, "artillery": 6 },
+      "civs": 14,
+      "mils": 8,
+      "docks": 1,
+      "relations": { "GER": -20 },
+      "faction": null,
+      "unlockedTemplates": ["infantry"]
+    },
+    "FRA": {
+      "name": "l10n.country.FRA",
+      "flag": "🇫🇷",
+      "color": "#6a8aaa",
+      "ideology": "democratic",
+      "capital": 1159316799,
+      "population": 50000000,
+      "manpower": 50000000,
+      "politicalPower": 40,
+      "stability": 0.55,
+      "warSupport": 0.55,
+      "legitimacy": 0.65,
+      "resources": { "steel": 22, "aluminium": 6 },
+      "equipment": { "infantry_weapon": 32, "artillery": 10 },
+      "civs": 22,
+      "mils": 10,
+      "docks": 3,
+      "relations": { "GER": -10 },
+      "faction": null,
+      "unlockedTemplates": ["infantry"]
+    }
+  },
+  "provinces": [
+    { "id": 1159312769, "terrain": "plains",   "coastal": false, "supply": 0.9, "infrastructure": 4 },
+    { "id": 1159312767, "terrain": "mountain", "coastal": false, "supply": 0.6, "infrastructure": 2 },
+    { "id": 1159310975, "terrain": "hills",    "coastal": false, "supply": 0.7, "infrastructure": 3 },
+    { "id": 1159310973, "terrain": "plains",   "coastal": false, "supply": 0.8, "infrastructure": 4 },
+    { "id": 1159312763, "terrain": "hills",    "coastal": false, "supply": 0.7, "infrastructure": 3 },
+    { "id": 1159312773, "terrain": "hills",    "coastal": false, "supply": 0.7, "infrastructure": 3 },
+    { "id": 1159310983, "terrain": "forest",   "coastal": false, "supply": 0.6, "infrastructure": 2 },
+    { "id": 1159315451, "terrain": "plains",   "coastal": false, "supply": 0.8, "infrastructure": 3 },
+    { "id": 1159314695, "terrain": "plains",   "coastal": false, "supply": 0.8, "infrastructure": 3 },
+    { "id": 1159314679, "terrain": "hills",    "coastal": false, "supply": 0.7, "infrastructure": 3 },
+    { "id": 1159314685, "terrain": "plains",   "coastal": false, "supply": 0.8, "infrastructure": 3 },
+    { "id": 1159314691, "terrain": "hills",    "coastal": false, "supply": 0.7, "infrastructure": 3 },
+    { "id": 1159314677, "terrain": "plains",   "coastal": true,  "supply": 0.8, "infrastructure": 3 },
+    { "id": 1159314699, "terrain": "forest",   "coastal": false, "supply": 0.6, "infrastructure": 2 },
+    { "id": 1159316799, "terrain": "plains",   "coastal": false, "supply": 0.9, "infrastructure": 4 },
+    { "id": 1159316737, "terrain": "plains",   "coastal": false, "supply": 0.8, "infrastructure": 4 },
+    { "id": 1159316741, "terrain": "plains",   "coastal": false, "supply": 0.7, "infrastructure": 3 },
+    { "id": 1159313547, "terrain": "plains",   "coastal": true,  "supply": 0.7, "infrastructure": 3 },
+    { "id": 1159313573, "terrain": "plains",   "coastal": true,  "supply": 0.8, "infrastructure": 3 },
+    { "id": 1159316785, "terrain": "plains",   "coastal": false, "supply": 0.8, "infrastructure": 3 }
+  ],
+  "owners": {
+    "1159312769": "GER", "1159312767": "GER", "1159310975": "GER", "1159310973": "GER",
+    "1159312763": "GER", "1159312773": "GER", "1159310983": "GER", "1159315451": "GER",
+    "1159314695": "POL", "1159314679": "POL", "1159314685": "POL",
+    "1159314691": "POL", "1159314677": "POL", "1159314699": "POL",
+    "1159316799": "FRA", "1159316737": "FRA", "1159316741": "FRA",
+    "1159313547": "FRA", "1159313573": "FRA", "1159316785": "FRA"
+  },
+  "states": [
+    { "id": 101, "name": "l10n.state.germany", "owner": "GER", "core": "GER", "provinces": [1159312769, 1159312767, 1159310975, 1159310973, 1159312763, 1159312773, 1159310983, 1159315451], "capitalProvince": 1159312769, "population": 42000000, "factories": 24, "isCapital": true },
+    { "id": 102, "name": "l10n.state.poland",   "owner": "POL", "core": "POL", "provinces": [1159314695, 1159314679, 1159314685, 1159314691, 1159314677, 1159314699], "capitalProvince": 1159314695, "population": 35000000, "factories": 14, "isCapital": false },
+    { "id": 103, "name": "l10n.state.france",   "owner": "FRA", "core": "FRA", "provinces": [1159316799, 1159316737, 1159316741, 1159313547, 1159313573, 1159316785], "capitalProvince": 1159316799, "population": 50000000, "factories": 22, "isCapital": false }
+  ],
+  "initialArmies": [
+    { "country": "GER", "province": 1159312769, "template": "infantry", "count": 24 },
+    { "country": "GER", "province": 1159310973, "template": "infantry", "count": 18 },
+    { "country": "POL", "province": 1159314695, "template": "infantry", "count": 16 },
+    { "country": "POL", "province": 1159314685, "template": "infantry", "count": 12 }
+  ],
+  "wars": [],
+  "events": { "enabled": ["danzig_demand"] },
+  "decisions": ["war_bonds"],
+  "missions": [
+    {
+      "id": "annex_poland",
+      "scope": "GER",
+      "objective": { "type": "controlState", "state": 102 },
+      "reward": { "politicalPower": 50, "stability": 0.05 },
+      "fail": { "type": "dateAfter", "value": "1939-12-31" }
+    },
+    {
+      "id": "survive",
+      "scope": "POL",
+      "objective": { "type": "survive", "until": "1946-01-01" },
+      "reward": null,
+      "fail": null
+    }
+  ],
+  "victoryConditions": {
+    "GER": { "type": "controlState", "states": [102] },
+    "POL": { "type": "survive", "until": "1946-01-01" }
+  }
+}

@@ -109,7 +109,13 @@ const App = {
     renderCountryList(campaign) {
         const list = document.getElementById('countryList');
         list.innerHTML = '';
-        for (const [tag, def] of Object.entries(campaign.scenario.countries)) {
+        const countries = campaign.scenario.countries;
+        // 全量剧本包含 250 个归属方，但开局只展示有完整内容的可玩国家。
+        const tags = Array.isArray(campaign.scenario.playable) && campaign.scenario.playable.length
+            ? campaign.scenario.playable.filter((tag) => countries[tag])
+            : Object.keys(countries);
+        for (const tag of tags) {
+            const def = countries[tag];
             const card = document.createElement('div');
             card.className = 'country-card';
             const ideo = IDEOLOGY[def.ideology] || { icon: '○', name: '中立' };

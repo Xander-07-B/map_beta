@@ -63,7 +63,12 @@ export class Campaign {
     newGame() {
         installCoreRules();
         this.rng = new Rng(this.seed);
-        this.state = createWorldState({ scenario: this.scenario, seed: this.seed, rng: this.rng });
+        this.state = createWorldState({
+            scenario: this.scenario,
+            seed: this.seed,
+            rng: this.rng,
+            divisions: this.content.divisions,
+        });
         this.clock.tick = 0;
         this.clock.acc = 0;
         return this.state;

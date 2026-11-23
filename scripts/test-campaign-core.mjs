@@ -99,8 +99,10 @@ section('3. 剧本加载与校验');
 {
     const loaded = await loadScenario('1936', { fetchJson });
     assertEqual(loaded.scenario.id, '1936', '1936 剧本加载成功');
-    assertEqual(Object.keys(loaded.scenario.countries).length, 3, '3 个国家');
-    assertEqual(loaded.scenario.provinces.length, 20, '20 个省份');
+    assertEqual(loaded.scenario.playable.length, 3, '3 个可玩国家');
+    assertEqual(Object.keys(loaded.scenario.countries).length, 250, '全地图 250 个归属方');
+    assertEqual(loaded.scenario.provinces.length, 4594, '全地图 4,594 个省份');
+    assertEqual(Object.keys(loaded.scenario.owners).length, 4594, '所有省份都有归属');
     assertEqual(Object.keys(loaded.focusTrees).length, 1, '国策树引用已解析');
     assertEqual(loaded.events['danzig_demand'] !== undefined, true, '事件引用已解析');
     assertEqual(loaded.decisions['war_bonds'] !== undefined, true, '决议引用已解析');
@@ -321,6 +323,8 @@ section('11. 军事闭环（部署 → 移动 → 战斗 → 占领）');
     const camp = await Campaign.create('1936', { fetchJson });
     camp.newGame();
     const s = camp.state;
+    // 本段验证部署/战斗数值，先清空剧本初始部队，避免干扰兵力断言
+    s.armies = [];
     // 渲染层注入真实邻接表；测试用剧本省份构造最小邻接
     camp.setMapIndex({
         neighbors: {

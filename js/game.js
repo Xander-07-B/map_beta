@@ -10,6 +10,7 @@ const Game = {
     campaign: null,        // Campaign 实例（模拟层）
     playerTag: null,       // 玩家国家 tag（GER/POL/FRA）
     selectedProvince: null,
+    selectedArmy: null,    // 选中的部队 id（地图上点击相邻省份即可移动）
     tool: 'move',
     _mapIndex: null,       // 地图 index.json（省份名称/邻接/bbox）
 
@@ -45,6 +46,7 @@ const Game = {
         this.campaign.state.players = { [tag]: { tag, isHuman: true } };
 
         this.selectedProvince = null;
+        this.selectedArmy = null;
         this.tool = 'move';
 
         // 归属就绪，让地图填充缓存失效并重绘
@@ -112,6 +114,20 @@ const Game = {
     },
 
     /**
+     * 省份当前控制方。
+     * 剧本省份取战役状态里的 controller；非剧本省份（地图上大量没有剧本数据的
+     * 省份）回退到地图元数据里的原始 ISO3 归属，可玩国家换算为战役 tag。
+     * 这样地图上任何省份都有明确归属，不会出现「无主」。
+     */
+    ownerOf(id) {
+        const st = this.state?.provinces?.[id];
+        if (st) return st.controller ?? null;
+        const iso = this._mapIndex?.meta?.[String(id)]?.owner;
+        if (!iso) return null;
+        return this.countryIdByIso3(iso) || iso;
+    },
+
+    /**
      * 省份视图：合并战役状态（归属/地形/供给）与地图元数据（名称/bbox/邻接）。
      * 地图拾取、tooltip、省份面板都读这里。
      */
@@ -123,18 +139,13 @@ const Game = {
             id,
             name: meta?.name || String(id),
             terrain: st?.terrain || 'plains',
-            controller: st?.controller ?? null,
+            controller: this.ownerOf(id),
             supply: st?.supply ?? 0,
             infrastructure: st?.infrastructure ?? 0,
             damage: st?.damage ?? 0,
             bbox: meta?.bbox,
             neighbors: this._mapIndex?.neighbors?.[String(id)]?.map(Number) ?? [],
         };
-    },
-
-    /** 省份当前控制方（战役状态）；非剧本省份返回 null，地图回退到原始 ISO3 归属 */
-    ownerOf(id) {
-        return this.state?.provinces?.[id]?.controller ?? null;
     },
 
     provincesOf(tag) {
@@ -253,8 +264,77 @@ const Game = {
 
     selectProvince(id) {
         this.selectedProvince = id;
+        // 切到不包含已选部队的省份时，取消部队选择（移动流程由 MapView 单独处理）
+        if (this.selectedArmy != null) {
+            const army = this.armyById(this.selectedArmy);
+            if (!army || army.provinceId !== id) this.selectedArmy = null;
+        }
         if (UI) UI.updateProvincePanel();
         if (MapView) MapView.requestDraw();
+    },
+
+    /** 选中一支部队（地图标记 / 省份速览卡 / 部队面板共用；只允许玩家自己的部队） */
+    selectArmy(id) {
+        const army = this.armyById(id);
+        if (!army) return;
+        if (this.playerTag && army.owner !== this.playerTag) return;
+        this.selectedArmy = id;
+        this.selectedProvince = army.provinceId;
+        if (UI) UI.updateProvincePanel();
+        if (MapView) MapView.requestDraw();
+    },
+
+    /** 取消部队选择（右键 / Esc） */
+    clearArmySelection() {
+        if (this.selectedArmy == null) return;
+        this.selectedArmy = null;
+        if (UI) UI.updateProvincePanel();
+        if (MapView) MapView.requestDraw();
+    },
+
+    /**
+     * 已选中部队的可移动方向（地图移动范围、面板下拉共用）。
+     * 返回 [{ id, name, controller, ok, err }]，ok 与命令校验同源。
+     */
+    moveOptionsFor(armyId) {
+        const army = this.armyById(armyId);
+        if (!army) return [];
+        const ids = this._mapIndex?.neighbors?.[String(army.provinceId)] || [];
+        return ids.map(Number).map((id) => {
+            const p = this.provinceById(id);
+            const blocked = this.canCommand({ t: 'moveArmy', armyId: army.id, to: id, country: army.owner });
+            return {
+                id,
+                name: p?.name || String(id),
+                controller: p?.controller ?? null,
+                ok: !blocked,
+                err: blocked?.err || null,
+            };
+        });
+    },
+
+    /**
+     * 移动已选中部队。成功后保留选中态，便于连续点击推进。
+     * @returns 命令结果 { ok, err? }
+     */
+    moveSelectedArmy(to) {
+        const armyId = this.selectedArmy;
+        if (armyId == null) return { ok: false, err: '未选中部队' };
+        const army = this.armyById(armyId);
+        if (!army) {
+            this.selectedArmy = null;
+            return { ok: false, err: '部队不存在' };
+        }
+        const r = this.command({ t: 'moveArmy', armyId, to, country: army.owner });
+        if (r.ok) {
+            // 入场战斗可能把这支部队打光，销毁后不再保留选中态
+            const after = this.armyById(armyId);
+            if (!after || after.strength <= 0) this.selectedArmy = null;
+            this.selectedProvince = to;
+            if (UI) UI.updateProvincePanel();
+            if (MapView) MapView.requestDraw();
+        }
+        return r;
     },
 
     // ===================== 存档 / 读取 =====================
@@ -280,6 +360,9 @@ const Game = {
             const data = JSON.parse(raw);
             this.campaign.restore(data);
             this.playerTag = data.meta.playerTag || this.playerTag;
+            // 读档后旧的选中引用可能已不存在
+            this.selectedProvince = null;
+            this.selectedArmy = null;
             if (MapView.invalidateFills) MapView.invalidateFills();
             return true;
         } catch {

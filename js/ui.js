@@ -9,17 +9,21 @@ const UI = {
     _eventPauseSpeed: 1,
     _lastPanelSignature: null,   // 上次渲染面板时的数据签名（避免无变化时反复重建 DOM）
     _panelMouse: null,           // 鼠标在面板内容区内的视口坐标（悬停镜像用）
+    _deployTarget: null,         // 部队面板里手动选择的部署省份
+    _toastTimer: null,
 
     init(game) {
         this.game = game;
         this._lastPanelSignature = null;
         this._panelMouse = null;
+        this._deployTarget = null;
         this.bindIconRail();
         this.bindMapTools();
         this.bindTopBar();
         this.bindModal();
         this.bindPanelModal();
         this.bindPanelHover();
+        this.bindProvinceCard();
     },
 
     // 安全翻译（缺 key 回退，不抛错到渲染层）
@@ -36,12 +40,67 @@ const UI = {
             [{ text: '确定', cls: 'primary', action: () => this.closeModal() }]);
     },
 
-    /** 部署目标省份：优先当前选中省份（须为己方控制），否则取首个控制省份 */
-    deployTarget(tag) {
-        const sel = this.game.selectedProvince;
+    /**
+     * 部署目标省份：地图当前选中的己方省份 > 面板里手动选择的目标 > 首个控制省份。
+     * 三者都走同一条解析，部署按钮与省份速览卡不会出现目标不一致。
+     */
+    resolveDeployTarget(tag) {
         const mine = this.game.provincesOf(tag);
-        if (sel !== null && mine.some((p) => p.id === sel)) return sel;
-        return mine[0]?.id ?? null;
+        if (mine.length === 0) return null;
+        const sel = this.game.selectedProvince;
+        if (sel != null && mine.some((p) => p.id === sel)) return sel;
+        if (this._deployTarget != null && mine.some((p) => p.id === this._deployTarget)) {
+            return this._deployTarget;
+        }
+        return mine[0].id;
+    },
+
+    /** 国家显示名：可玩国家走 l10n；其余用地图元数据里的中文名，避免只显示 ISO3 */
+    ownerLabel(tag) {
+        if (!tag) return '无主';
+        const name = this.game.countryDisplayName(tag);
+        if (name !== tag) return name;
+        const meta = typeof MapView !== 'undefined' && MapView.countryMeta
+            ? MapView.countryMeta.get(tag) : null;
+        return meta?.name || tag;
+    },
+
+    /** 轻量提示条（部署/移动成功反馈） */
+    toast(msg) {
+        const el = document.getElementById('toast');
+        if (!el) return;
+        el.textContent = msg;
+        el.classList.add('show');
+        clearTimeout(this._toastTimer);
+        this._toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+    },
+
+    /**
+     * 部署一支部队：命令、反馈、自动选中新部队（便于接着移动）。
+     * 面板与省份速览卡共用。
+     */
+    deployAt(templateId, province, count = 1) {
+        const tag = this.game.playerTag;
+        const before = new Set(this.game.allArmies().map((a) => a.id));
+        const r = this.game.command({
+            t: 'deployArmy', country: tag, province, template: templateId, count,
+        });
+        if (!r.ok) {
+            this.toast(r.err || '部署失败');
+            return r;
+        }
+        const tpl = this.game.divisions[templateId];
+        const prov = this.game.provinceById(province);
+        this.toast(`已部署 ${tpl ? tpl.name : templateId} ×${count} → ${prov ? prov.name : province}`);
+        const created = this.game.allArmies().filter((a) => !before.has(a.id) && a.provinceId === province);
+        if (created.length > 0) {
+            // 选中新部队，紧接着就能在地图或面板里移动
+            this.game.selectArmy(created[created.length - 1].id);
+        } else {
+            this.updateProvincePanel();
+        }
+        if (typeof MapView !== 'undefined' && MapView.requestDraw) MapView.requestDraw();
+        return r;
     },
 
     // ===================== 面板弹窗开关 =====================
@@ -83,6 +142,31 @@ const UI = {
         document.getElementById('panelModalBackdrop').addEventListener('click', () => this.closePanel());
     },
 
+    /**
+     * 地图上的省份速览卡（选中省份后出现）：查看驻扎部队、快捷部署、选中部队。
+     * 事件委托在卡片容器上，卡片内容重建后无需重新绑定。
+     */
+    bindProvinceCard() {
+        const card = document.getElementById('provinceCard');
+        if (!card) return;
+        card.addEventListener('click', (e) => {
+            const target = e.target;
+            if (!target || typeof target.closest !== 'function') return;
+            const armyBtn = target.closest('[data-army-select]');
+            if (armyBtn) {
+                this.game.selectArmy(Number(armyBtn.dataset.armySelect));
+                return;
+            }
+            const deployBtn = target.closest('[data-deploy-here]');
+            if (deployBtn) {
+                const province = this.game.selectedProvince;
+                if (province != null) this.deployAt(deployBtn.dataset.deployHere, province, 1);
+                return;
+            }
+            if (target.closest('[data-province-close]')) this.game.selectProvince(null);
+        });
+    },
+
     bindIconRail() {
         const btns = document.querySelectorAll('.rail-btn');
         btns.forEach(btn => {
@@ -93,6 +177,11 @@ const UI = {
     // ===================== 主刷新 =====================
     refreshAll() {
         if (!this.game || !this.game.state) return;
+        // 战斗可能已经打光当前选中的部队，及时清理选中态
+        if (this.game.selectedArmy != null) {
+            const a = this.game.armyById(this.game.selectedArmy);
+            if (!a || a.strength <= 0) this.game.clearArmySelection();
+        }
         this.updateTopBar();
         this.updateBottomBar();
         // 面板关闭时不要反复重建隐藏的 DOM；打开时也只在数据签名变化时重建，
@@ -101,13 +190,32 @@ const UI = {
         if (pm && !pm.classList.contains('hidden')) {
             const sig = this.panelSignature();
             if (sig !== this._lastPanelSignature) {
-                this._lastPanelSignature = sig;
                 const content = document.getElementById('panelContent');
+                // 下拉框展开时不要重建 DOM：否则选取部署/移动目标会被定时刷新打断
+                const active = document.activeElement;
+                if (active && active.tagName === 'SELECT' && content.contains(active)) return;
+                this._lastPanelSignature = sig;
                 const scrollTop = content.scrollTop;
                 this.renderPanel(this.currentPanel);
                 content.scrollTop = scrollTop;
             }
         }
+    },
+
+    /**
+     * 玩家控制省份的轻量签名（数量 + 稳定哈希）。
+     * 全量剧本有 4,594 个省份，面板每 400ms 刷新时不能把整个 provinces 表
+     * 序列化进签名，否则会造成明显卡顿。
+     */
+    ownedProvinceSignature(tag) {
+        let count = 0;
+        let hash = 0;
+        for (const p of Object.values(this.game.state.provinces)) {
+            if (p.controller !== tag) continue;
+            count++;
+            hash = (hash * 31 + p.id) >>> 0;
+        }
+        return [count, hash];
     },
 
     /**
@@ -122,14 +230,14 @@ const UI = {
         const c = s.countries[tag];
         if (!c) return '';
         return JSON.stringify([
-            tag, g.selectedProvince,
+            tag, g.selectedProvince, g.selectedArmy, this._deployTarget,
             c.politicalPower, c.manpower, c.population, c.civs, c.mils, c.docks,
             c.stability, c.warSupport, c.legitimacy,
             c.resources, c.equipment, c.construction, c.production,
             c.tech, c.unlockedTemplates, c.relations, c.garrison, c.flags, c.bonuses,
             c.activeFocus,
             s.focuses[tag], s.decisions[tag], s.research[tag],
-            s.provinces, s.armies, s.wars, s.alliances, s.missions,
+            this.ownedProvinceSignature(tag), s.armies, s.wars, s.alliances, s.missions,
             s.history.length, s.log.length,
         ]);
     },
@@ -240,19 +348,19 @@ const UI = {
             <span class="stat-value">${c.docks}</span>
         </div>`;
 
-        // 军事（部队 + 驻军存在性）
+        // 军事（可指挥部队数量 + 总兵力）
         const milBox = document.getElementById('statMilitary');
-        const myGarrison = this.game.garrisons().filter(g => g.owner === tag).length;
-        const myArmies = this.game.armiesOf(tag).length;
+        const myArmies = this.game.armiesOf(tag);
+        const totalStrength = Math.round(myArmies.reduce((sum, a) => sum + (a.strength || 0), 0));
         const war = this.game.isWarFor(tag);
         const wars = this.game.state.wars.filter(w => w.a === tag || w.b === tag).length;
         milBox.innerHTML = `<div class="stat-item">
             <span class="stat-label">⚔ 部队</span>
-            <span class="stat-value">${myArmies}</span>
+            <span class="stat-value">${myArmies.length}</span>
         </div>
         <div class="stat-item">
-            <span class="stat-label">✕ 驻军区</span>
-            <span class="stat-value">${myGarrison}</span>
+            <span class="stat-label">▮ 总兵力</span>
+            <span class="stat-value">${totalStrength}</span>
         </div>
         <div class="stat-item">
             <span class="stat-label">${war ? '● 战争中' : '○ 和平'}</span>
@@ -532,63 +640,90 @@ const UI = {
         const divisions = this.game.divisions;
         const armies = this.game.armiesOf(tag);
         const templates = this.game.availableTemplates(tag);
-        const selProv = this.game.selectedProvince;
+        const owned = this.game.provincesOf(tag);
+        const target = this.resolveDeployTarget(tag);
+        const targetProv = target != null ? this.game.provinceById(target) : null;
+        const targetArmies = target != null ? this.game.armiesIn(target).length : 0;
+        const selectedArmy = this.game.selectedArmy != null
+            ? this.game.armyById(this.game.selectedArmy) : null;
 
-        // 可部署省份：玩家控制的省份
-        const myProvinces = this.game.provincesOf(tag);
-        const deployable = myProvinces.length > 0;
+        const targetOptions = owned.map((p) => {
+            const n = this.game.armiesIn(p.id).length;
+            return `<option value="${p.id}" ${p.id === target ? 'selected' : ''}>${p.name}${n ? `（${n} 支部队）` : ''}</option>`;
+        }).join('');
 
         return `
         <div class="panel-section">
-            <h4>部队（${armies.length}）</h4>
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
-                人力 ${Math.round(c.manpower)} · 补给 ${Math.round(c.resources.supplies || 0)}
+            <h4>部署部队</h4>
+            <div class="deploy-target">
+                <label>目标省份</label>
+                ${owned.length === 0
+                    ? '<span style="color:var(--red)">尚无可部署省份</span>'
+                    : `<select id="armyDeployTarget" class="ui-select" data-deploy-target>
+                           ${targetOptions}
+                       </select>`}
             </div>
-            ${armies.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">尚无部队，从下方部署。</div>' :
-                armies.map((a) => {
-                    const prov = this.game.provinceById(a.provinceId);
-                    const tpl = divisions[a.template];
-                    const adj = this.game.index?.neighbors?.[String(a.provinceId)] || [];
-                    return `<div class="army-card">
-                        <div class="ac-name">${tpl ? tpl.icon + ' ' + tpl.name : a.template}
-                            <span style="color:var(--text-dim);font-size:11px">· ${prov ? prov.name : a.provinceId}</span></div>
-                        <div class="ac-strength">兵力 ${Math.round(a.strength)} · 组织度 ${Math.round(a.org * 100)}% · 速度 ${a.speed}</div>
-                        <div style="margin-top:6px;display:flex;flex-wrap:wrap;gap:4px">
-                            ${adj.length === 0 ? '<span style="font-size:11px;color:var(--text-dim)">无可移动方向</span>' :
-                                adj.map((nid) => {
-                                    const n = this.game.provinceById(Number(nid));
-                                    const blocked = this.game.canCommand({ t: 'moveArmy', armyId: a.id, to: Number(nid) });
-                                    return `<button class="btn-action" data-move-army="${a.id}" data-to="${nid}" ${blocked ? 'disabled' : ''}>
-                                        ${n ? n.name : nid}</button>`;
-                                }).join('')}
-                            <button class="btn-action" data-disband="${a.id}">解散</button>
+            <div class="deploy-meta">${targetProv
+                ? `${targetProv.name} · 我军控制 · 现有部队 ${targetArmies}`
+                : '无可部署省份'} · 人力 ${Math.round(c.manpower)} · 补给 ${Math.round(c.resources.supplies || 0)}</div>
+            ${templates.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">未解锁任何部队模板，需先研究对应科技。</div>' :
+                templates.map((tplId) => {
+                    const tpl = divisions[tplId];
+                    const cost = this.game.divisionCost(tplId);
+                    const one = this.game.canCommand({ t: 'deployArmy', country: tag, province: target, template: tplId, count: 1 });
+                    const five = this.game.canCommand({ t: 'deployArmy', country: tag, province: target, template: tplId, count: 5 });
+                    return `<div class="focus-card deploy-card">
+                        <div class="dc-head">
+                            <span>${tpl.icon} ${tpl.name}</span>
+                            <span class="dc-cost">人力 ${cost.manpower} · ${Object.entries(cost.equipment).map(([k, v]) =>
+                                `${this.game.equipment[k]?.name || k}×${v}`).join('、') || '无装备消耗'}</span>
+                        </div>
+                        <div class="dc-actions">
+                            <button class="btn-action" data-deploy="${tplId}" data-deploy-count="1" ${one ? 'disabled' : ''}>部署 1 支</button>
+                            <button class="btn-action" data-deploy="${tplId}" data-deploy-count="5" ${five ? 'disabled' : ''}>部署 5 支</button>
                         </div>
                     </div>`;
                 }).join('')}
         </div>
         <div class="panel-section">
-            <h4>部署部队</h4>
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
-                部署需消耗人力与装备库存。目标省份：<b>${selProv ? (this.game.provinceById(selProv)?.name || selProv) : '未选择（默认首个控制省份）'}</b>
+            <h4>部队（${armies.length}）</h4>
+            ${selectedArmy ? `<div class="army-selected-hint">
+                <span>已选中 ${divisions[selectedArmy.template]?.name || selectedArmy.template}：
+                    点击地图上相邻省份即可移动，右键 / Esc 取消。</span>
+                <button class="btn-action" data-clear-army="1">取消选择</button>
+            </div>` : ''}
+            ${armies.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">尚无部队，先在上方部署。</div>' :
+                armies.map((a) => this.renderArmyCard(a, divisions, selectedArmy)).join('')}
+        </div>`;
+    },
+
+    /** 单支部队卡片：查看状态、地图选中、定位、快捷移动、解散 */
+    renderArmyCard(a, divisions, selectedArmy) {
+        const tpl = divisions[a.template];
+        const prov = this.game.provinceById(a.provinceId);
+        const opts = this.game.moveOptionsFor(a.id);
+        const legal = opts.filter((o) => o.ok);
+        const isSel = !!selectedArmy && selectedArmy.id === a.id;
+        const inSelectedProv = this.game.selectedProvince === a.provinceId;
+        return `<div class="army-card${isSel ? ' selected' : ''}">
+            <div class="ac-head">
+                <span class="ac-name">${tpl ? tpl.icon + ' ' + tpl.name : a.template}</span>
+                <span class="ac-prov">${prov ? prov.name : a.provinceId}${inSelectedProv ? ' · 当前选中省份' : ''}</span>
             </div>
-            ${templates.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">未解锁任何部队模板，需先研究对应科技。</div>' :
-                templates.map((tplId) => {
-                    const tpl = divisions[tplId];
-                    const cost = this.game.divisionCost(tplId);
-                    const target = selProv && myProvinces.some((p) => p.id === selProv)
-                        ? selProv : myProvinces[0]?.id;
-                    const blocked = this.game.canCommand({
-                        t: 'deployArmy', country: tag, province: target, template: tplId, count: 1,
-                    });
-                    return `<div class="focus-card">
-                        <div style="font-weight:600">${tpl.icon} ${tpl.name}</div>
-                        <div style="font-size:11px;color:var(--text-dim);margin-top:3px">
-                            人力 ${cost.manpower} · ${Object.entries(cost.equipment).map(([k, v]) =>
-                                `${this.game.equipment[k]?.name || k}×${v}`).join('、') || '无装备消耗'}
-                        </div>
-                        <button class="btn-action" data-deploy="${tplId}" ${blocked ? 'disabled' : ''}>部署 1 支</button>
-                    </div>`;
-                }).join('')}
+            <div class="ac-strength">兵力 ${Math.round(a.strength)} · 组织度 ${Math.round(a.org * 100)}% · 速度 ${a.speed}</div>
+            <div class="ac-actions">
+                <button class="btn-action" data-select-army="${a.id}">${isSel ? '已选中' : '地图选中'}</button>
+                <button class="btn-action" data-focus-army="${a.id}">定位</button>
+                <button class="btn-action" data-disband="${a.id}">解散</button>
+            </div>
+            ${legal.length === 0 ? '<div class="ac-move-note">无可移动的相邻省份</div>' : `
+                <div class="ac-move">
+                    <select class="ui-select" data-move-select="${a.id}">
+                        <option value="">移动至相邻省份…</option>
+                        ${opts.map((o) => `<option value="${o.id}" ${o.ok ? '' : 'disabled'}>${o.name}${o.ok ? '' : `（${o.err || '不可移动'}）`}</option>`).join('')}
+                    </select>
+                    <button class="btn-action" data-move-army="${a.id}">移动</button>
+                </div>`}
         </div>`;
     },
 
@@ -702,18 +837,19 @@ const UI = {
     renderIntelligence() {
         const tag = this.game.playerTag;
         const c = this.game.playerCountry();
-        const myGarrison = this.game.garrisons().filter(g => g.owner === tag);
+        const myArmies = this.game.armiesOf(tag);
         const selProv = this.game.selectedProvince ? this.game.provinceById(this.game.selectedProvince) : null;
         return `
         <div class="panel-section">
-            <h4>驻军（存在性）</h4>
-            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">战斗结算不在战役系统范围内，驻军仅作呈现与 AI 评估输入。</div>
-            ${myGarrison.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">无驻军</div>' :
-                myGarrison.map(g => {
-                    const prov = this.game.provinceById(g.provinceId);
+            <h4>部队部署</h4>
+            <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">开局部队与后续部署的部队都可直接指挥；点击地图上的圆形标记，或在「部队」面板中选择。</div>
+            ${myArmies.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">无部队</div>' :
+                myArmies.map(a => {
+                    const prov = this.game.provinceById(a.provinceId);
+                    const tpl = this.game.divisions[a.template];
                     return `<div class="army-card">
-                        <div class="ac-name">${prov ? prov.name : g.provinceId}</div>
-                        <div class="ac-strength">驻军：${g.count}</div>
+                        <div class="ac-name">${prov ? prov.name : a.provinceId}</div>
+                        <div class="ac-strength">${tpl ? tpl.name : a.template} · 兵力 ${Math.round(a.strength)}</div>
                     </div>`;
                 }).join('')}
         </div>
@@ -721,7 +857,7 @@ const UI = {
             <h4>当前选中省份</h4>
             ${selProv ? `
                 <div class="panel-row"><span class="pr-label">省份</span><span class="pr-value">${selProv.name}</span></div>
-                <div class="panel-row"><span class="pr-label">控制方</span><span class="pr-value">${selProv.controller ? this.tt(this.game.countryById(selProv.controller).name) : '无主'}</span></div>
+                <div class="panel-row"><span class="pr-label">控制方</span><span class="pr-value">${this.ownerLabel(selProv.controller)}</span></div>
                 <div class="panel-row"><span class="pr-label">地形</span><span class="pr-value">${(TERRAIN[selProv.terrain] || { name: selProv.terrain }).name}</span></div>
                 <div class="panel-row"><span class="pr-label">供给</span><span class="pr-value">${selProv.supply}</span></div>
             ` : '<div style="font-size:12px;color:var(--text-dim)">请在地图上选择一个省份</div>'}
@@ -743,9 +879,74 @@ const UI = {
         </div>`;
     },
 
-    // ===================== 省份信息面板 =====================
+    // ===================== 省份速览卡（地图左下角） =====================
+    /**
+     * 点击省份后在左下角显示速览卡：归属、地形、驻扎部队（可选中）、
+     * 快捷部署按钮。查看与部署都不再需要打开侧栏面板。
+     */
     updateProvincePanel() {
-        // 省份信息在情报面板与地图 tooltip 呈现，此处保留接口
+        const card = document.getElementById('provinceCard');
+        if (!card || !this.game || !this.game.state) return;
+        const id = this.game.selectedProvince;
+        if (id == null) {
+            card.classList.add('hidden');
+            card.innerHTML = '';
+            return;
+        }
+        const prov = this.game.provinceById(id);
+        if (!prov) {
+            card.classList.add('hidden');
+            card.innerHTML = '';
+            return;
+        }
+
+        const tag = this.game.playerTag;
+        const mine = prov.controller === tag;
+        if (mine) this._deployTarget = prov.id;
+
+        const armies = this.game.armiesIn(prov.id).filter((a) => a.strength > 0);
+        const selArmyId = this.game.selectedArmy;
+        const unitRows = armies.map((a) => {
+            const tpl = this.game.divisions[a.template];
+            const selected = a.id === selArmyId;
+            const isMine = a.owner === tag;
+            return `<div class="pc-army${selected ? ' selected' : ''}">
+                <span class="pc-army-name">${tpl ? tpl.icon + ' ' + tpl.name : a.template}</span>
+                <span class="pc-army-str">${Math.round(a.strength)}</span>
+                ${isMine
+                    ? `<button class="pc-btn${selected ? ' on' : ''}" data-army-select="${a.id}">${selected ? '已选中' : '选中'}</button>`
+                    : `<span class="pc-army-owner">${this.ownerLabel(a.owner)}</span>`}
+            </div>`;
+        }).join('');
+
+        const templates = mine ? this.game.availableTemplates(tag) : [];
+        const deployButtons = templates.length === 0 ? '' : `
+            <div class="pc-section-title">快捷部署</div>
+            <div class="pc-deploy">${templates.map((tplId) => {
+                const tpl = this.game.divisions[tplId];
+                const blocked = this.game.canCommand({
+                    t: 'deployArmy', country: tag, province: prov.id, template: tplId, count: 1,
+                });
+                return `<button class="pc-btn" data-deploy-here="${tplId}" ${blocked ? 'disabled' : ''}
+                    title="${blocked ? blocked.err : '部署 1 支到本省'}">${tpl.icon} ${tpl.name}</button>`;
+            }).join('')}</div>`;
+
+        const terrain = (typeof TERRAIN !== 'undefined' && TERRAIN[prov.terrain]?.name) || prov.terrain;
+        const movingNote = selArmyId != null && armies.some((a) => a.id === selArmyId)
+            ? '<div class="pc-note">已选中部队：点击地图上相邻省份移动，右键 / Esc 取消。</div>' : '';
+
+        card.innerHTML = `
+            <div class="pc-head">
+                <span class="pc-name">${prov.name}</span>
+                <button class="pc-close" data-province-close title="关闭">✕</button>
+            </div>
+            <div class="pc-sub"><span class="pc-owner">${this.ownerLabel(prov.controller)}</span>
+                · ${terrain} · 供给 ${prov.supply}${prov.damage ? ` · 受损 ${prov.damage}` : ''}</div>
+            ${armies.length === 0 ? '' : `<div class="pc-section-title">驻扎部队</div><div class="pc-armies">${unitRows}</div>`}
+            ${deployButtons}
+            ${movingNote}
+        `;
+        card.classList.remove('hidden');
     },
 
     // ===================== 模态框 =====================
@@ -866,34 +1067,83 @@ const UI = {
                 this.refreshAll();
             });
         });
-        // 部队
+        // 部队：部署目标选择（选省份同时同步地图高亮）
+        document.querySelectorAll('[data-deploy-target]').forEach(el => {
+            el.addEventListener('change', () => {
+                this._deployTarget = Number(el.value);
+                this.game.selectProvince(this._deployTarget);
+                this._lastPanelSignature = this.panelSignature();
+                this.renderPanel(this.currentPanel);
+            });
+        });
+        // 部队：部署
         document.querySelectorAll('[data-deploy]').forEach(el => {
             el.addEventListener('click', () => {
-                const target = this.deployTarget(tag);
-                if (target === null) {
-                    this.showModal('提示', '<p>请先在地图上选择一个自己控制的省份。</p>',
-                        [{ text: '确定', cls: 'primary', action: () => this.closeModal() }]);
+                const target = this.resolveDeployTarget(tag);
+                if (target == null) {
+                    this.toast('请先选择一个自己控制的省份');
                     return;
                 }
-                const r = this.game.command({
-                    t: 'deployArmy', country: tag, province: target, template: el.dataset.deploy, count: 1,
-                });
-                this.notify(r);
+                this.deployAt(el.dataset.deploy, target, Number(el.dataset.deployCount || 1));
                 this.refreshAll();
             });
         });
+        // 部队：面板内快捷移动（地图上也可“选中部队 → 点相邻省份”）
         document.querySelectorAll('[data-move-army]').forEach(el => {
             el.addEventListener('click', () => {
-                const r = this.game.command({
-                    t: 'moveArmy', armyId: Number(el.dataset.moveArmy), to: Number(el.dataset.to),
-                });
-                this.notify(r);
+                const armyId = Number(el.dataset.moveArmy);
+                const select = document.querySelector(`[data-move-select="${armyId}"]`);
+                const to = select ? Number(select.value) : NaN;
+                if (!to) {
+                    this.toast('请先选择目标省份');
+                    return;
+                }
+                const r = this.game.command({ t: 'moveArmy', armyId, to });
+                if (!r.ok) {
+                    this.toast(r.err || '移动失败');
+                    return;
+                }
+                this.game.selectProvince(to);
+                this.game.selectArmy(armyId);
+                this.toast('部队已移动');
+                this.refreshAll();
+                if (typeof MapView !== 'undefined' && MapView.requestDraw) MapView.requestDraw();
+            });
+        });
+        // 部队：地图选中 / 定位 / 取消 / 解散
+        document.querySelectorAll('[data-select-army]').forEach(el => {
+            el.addEventListener('click', () => {
+                this.game.selectArmy(Number(el.dataset.selectArmy));
+                this.closePanel();
+            });
+        });
+        document.querySelectorAll('[data-focus-army]').forEach(el => {
+            el.addEventListener('click', () => {
+                const army = this.game.armyById(Number(el.dataset.focusArmy));
+                if (!army) return;
+                this.closePanel();
+                this.game.selectArmy(army.id);
+                if (typeof MapView !== 'undefined' && MapView.focusProvince) {
+                    MapView.focusProvince(army.provinceId);
+                }
+            });
+        });
+        document.querySelectorAll('[data-clear-army]').forEach(el => {
+            el.addEventListener('click', () => {
+                this.game.clearArmySelection();
                 this.refreshAll();
             });
         });
         document.querySelectorAll('[data-disband]').forEach(el => {
             el.addEventListener('click', () => {
-                this.game.command({ t: 'disbandArmy', armyId: Number(el.dataset.disband) });
+                const id = Number(el.dataset.disband);
+                const r = this.game.command({ t: 'disbandArmy', armyId: id });
+                if (!r.ok) {
+                    this.toast(r.err || '解散失败');
+                } else {
+                    if (this.game.selectedArmy === id) this.game.clearArmySelection();
+                    this.toast('部队已解散');
+                }
                 this.refreshAll();
             });
         });

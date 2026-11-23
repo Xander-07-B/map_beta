@@ -9,7 +9,9 @@
     "test:core": "node scripts/test-campaign-core.mjs",
     "test:integration": "node scripts/test-integration.mjs",
     "test:ui": "node scripts/test-ui-smoke.mjs",
-    "build:map": "node scripts/build-provinces.mjs && node scripts/build-index.mjs"
+    "build:map": "node scripts/build-provinces.mjs && node scripts/build-index.mjs",
+    "build:scenario": "node scripts/build-scenario.mjs",
+    "build:all": "npm run build:map && npm run build:scenario"
   },
   "repository": {
     "type": "git",

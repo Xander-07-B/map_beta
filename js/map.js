@@ -112,7 +112,7 @@ const MapView = {
     fitScale: 0.3, minScale: 0.25, maxScale: 24.0,
 
     // === 交互状态 ===
-    hoverProvince: null, hoverCountry: null,
+    hoverProvince: null, hoverCountry: null, hoverArmyId: null,
     isDragging: false, isPinching: false,
     dragStartX: 0, dragStartY: 0, lastMouseX: 0, lastMouseY: 0,
     pinchStartDist: 0, pinchStartScale: 1, pinchMid: { x: 0, y: 0 },
@@ -593,6 +593,64 @@ const MapView = {
         return null;
     },
 
+    /** 部队标记的屏幕半径（与 drawArmies 的绘制尺寸一致） */
+    armyScreenRadius(army) {
+        return Math.max(7, Math.min(18, 6 + army.strength / 4)) / 2;
+    },
+
+    /**
+     * 同省多支部队时的屏幕偏移：围绕省份中心排成一圈，
+     * 使开局的多支部队都能看见并分别点选（否则会完全重叠）。
+     */
+    armyScreenOffset(army) {
+        const list = this.game.armiesIn(army.provinceId).filter((a) => a.strength > 0);
+        const n = list.length;
+        if (n <= 1) return { x: 0, y: 0 };
+        const i = Math.max(0, list.findIndex((a) => a.id === army.id));
+        const ring = Math.floor(i / 8);
+        const k = i % 8;
+        const count = Math.min(8, n - ring * 8);
+        const radius = 9 + ring * 8;
+        const angle = -Math.PI / 2 + (k / count) * Math.PI * 2;
+        return { x: Math.cos(angle) * radius, y: Math.sin(angle) * radius };
+    },
+
+    /**
+     * 屏幕坐标拾取部队标记（取距离最近者）。
+     * 只有作战部队可点选，驻军是方形标记、不可选中。
+     */
+    findArmyAt(screenX, screenY) {
+        if (!this.game || !this.paths) return null;
+        let best = null;
+        let bestDist = Infinity;
+        for (const a of this.game.allArmies()) {
+            if (a.strength <= 0) continue;
+            const center = this.provinceCenter(a.provinceId);
+            if (!center) continue;
+            const off = this.armyScreenOffset(a);
+            const sx = center.x * this.scale + this.offsetX + off.x;
+            const sy = center.y * this.scale + this.offsetY + off.y;
+            const d = Math.hypot(sx - screenX, sy - screenY);
+            const r = this.armyScreenRadius(a) + 6;
+            if (d <= r && d < bestDist) { best = a; bestDist = d; }
+        }
+        return best;
+    },
+
+    provinceCenter(provinceId) {
+        const b = this.bbox && this.bbox.get(provinceId);
+        if (!b) return null;
+        return { x: (b[0] + b[2]) / 2, y: (b[1] + b[3]) / 2 };
+    },
+
+    /** 把视野移到指定省份（部队面板「定位」按钮） */
+    focusProvince(provinceId) {
+        const c = this.provinceCenter(provinceId);
+        if (!c) return false;
+        this.centerOn(c.x, c.y, Math.max(this.scale, this.LOD_PROV_COARSE));
+        return true;
+    },
+
     findCountryAt(wx, wy) {
         if (!this.ready || !this.countryGrid) return null;
         const [x0, y0, x1, y1] = this.worldBounds;
@@ -812,6 +870,7 @@ const MapView = {
                  (view.x1 - view.x0) + pad * 2, (view.y1 - view.y0) + pad * 2);
         ctx.clip();
         this.drawFrontlines(ctx);
+        this.drawArmyMoveRange(ctx);
         this.drawArmies(ctx);
         if (countryMode) this.drawCountryHover(ctx);
         else this.drawHighlights(ctx);
@@ -1038,6 +1097,70 @@ const MapView = {
         ctx.lineDashOffset = 0;
     },
 
+    /**
+     * 选中部队的可移动范围：合法目标省份绿色填充 + 虚线描边 + 指向箭头，
+     * 不可移动的相邻省份淡红色提示。只在省份层级显示（国家层级没有省界可参照）。
+     */
+    drawArmyMoveRange(ctx) {
+        if (this.scale < this.LOD_COUNTRY || this.game.selectedArmy == null) return;
+        const army = this.game.armyById(this.game.selectedArmy);
+        if (!army || army.strength <= 0) return;
+        const opts = this.game.moveOptionsFor(army.id);
+        if (opts.length === 0) return;
+
+        for (const o of opts) {
+            const path = this.paths.get(o.id);
+            if (!path) continue;
+            ctx.fillStyle = o.ok ? 'rgba(52, 211, 153, 0.16)' : 'rgba(248, 113, 113, 0.10)';
+            ctx.fill(path);
+        }
+        for (const o of opts) {
+            if (!o.ok) continue;
+            const path = this.paths.get(o.id);
+            if (!path) continue;
+            ctx.strokeStyle = 'rgba(52, 211, 153, 0.85)';
+            ctx.lineWidth = 2 / this.scale;
+            ctx.setLineDash([6 / this.scale, 5 / this.scale]);
+            ctx.stroke(path);
+        }
+        ctx.setLineDash([]);
+
+        // 箭头：从部队所在省中心指向每个可移动省份中心
+        const from = this.provinceCenter(army.provinceId);
+        if (!from) return;
+        ctx.strokeStyle = 'rgba(251, 191, 36, 0.85)';
+        ctx.fillStyle = 'rgba(251, 191, 36, 0.85)';
+        ctx.lineWidth = 2 / this.scale;
+        for (const o of opts) {
+            if (!o.ok) continue;
+            const to = this.provinceCenter(o.id);
+            if (!to) continue;
+            const dx = to.x - from.x;
+            const dy = to.y - from.y;
+            const len = Math.hypot(dx, dy);
+            if (len < 1e-6) continue;
+            // 两端留白，避免箭头压住部队标记和省份中心
+            const pad = Math.min(len * 0.3, 14 / this.scale);
+            const sx = from.x + (dx / len) * pad;
+            const sy = from.y + (dy / len) * pad;
+            const ex = to.x - (dx / len) * pad;
+            const ey = to.y - (dy / len) * pad;
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(ex, ey);
+            ctx.stroke();
+
+            const head = Math.min(len * 0.3, 7 / this.scale);
+            const ang = Math.atan2(dy, dx);
+            ctx.beginPath();
+            ctx.moveTo(ex, ey);
+            ctx.lineTo(ex - head * Math.cos(ang - 0.42), ey - head * Math.sin(ang - 0.42));
+            ctx.lineTo(ex - head * Math.cos(ang + 0.42), ey - head * Math.sin(ang + 0.42));
+            ctx.closePath();
+            ctx.fill();
+        }
+    },
+
     drawArmies(ctx) {
         const game = this.game;
         const at = (provinceId) => {
@@ -1076,19 +1199,30 @@ const MapView = {
             if (a.strength <= 0) continue;
             const p = at(a.provinceId);
             if (!p) continue;
+            const off = this.armyScreenOffset(a);
+            const cx = p.x + off.x / this.scale;
+            const cy = p.y + off.y / this.scale;
             const size = Math.max(7, Math.min(18, 6 + a.strength / 4)) / this.scale;
             ctx.fillStyle = ownerColor(a.owner);
             ctx.strokeStyle = '#000';
             ctx.lineWidth = 1.4 / this.scale;
             ctx.beginPath();
-            ctx.arc(p.x, p.y, size / 2, 0, Math.PI * 2);
+            ctx.arc(cx, cy, size / 2, 0, Math.PI * 2);
             ctx.fill();
             ctx.stroke();
+            // 选中标记：外圈金色高亮环
+            if (this.game.selectedArmy === a.id) {
+                ctx.beginPath();
+                ctx.arc(cx, cy, size / 2 + 3 / this.scale, 0, Math.PI * 2);
+                ctx.strokeStyle = '#fbbf24';
+                ctx.lineWidth = 2.5 / this.scale;
+                ctx.stroke();
+            }
             if (this.scale > 0.5) {
                 ctx.fillStyle = this.armyTextColor;
                 ctx.font = `bold ${9 / this.scale}px sans-serif`;
                 ctx.textAlign = 'center';
-                ctx.fillText(Math.round(a.strength), p.x, p.y + 3 / this.scale);
+                ctx.fillText(Math.round(a.strength), cx, cy + 3 / this.scale);
             }
         }
     },
@@ -1190,6 +1324,7 @@ const MapView = {
         c.addEventListener('mouseleave', () => {
             this.hoverProvince = null;
             this.hoverCountry = null;
+            this.hoverArmyId = null;
             this.hideTooltip();
         });
         c.addEventListener('wheel', (e) => this.onWheel(e), { passive: false });
@@ -1198,6 +1333,18 @@ const MapView = {
         c.addEventListener('touchmove', (e) => this.onTouchMove(e), { passive: false });
         c.addEventListener('touchend', (e) => this.onTouchEnd(e));
         c.addEventListener('touchcancel', (e) => this.onTouchEnd(e));
+        // 右键 / Esc 取消部队选择（不影响浏览器默认右键菜单）
+        c.addEventListener('contextmenu', (e) => {
+            if (this.game && this.game.selectedArmy != null) {
+                e.preventDefault();
+                this.game.clearArmySelection();
+            }
+        });
+        window.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && this.game && this.game.selectedArmy != null) {
+                this.game.clearArmySelection();
+            }
+        });
         window.addEventListener('resize', () => this.resize());
     },
 
@@ -1232,6 +1379,20 @@ const MapView = {
         }
         if (!this.ready) return;
         const world = this.screenToWorld(pos.x, pos.y);
+
+        // 部队标记在任意缩放层级都可见：悬停时优先显示部队信息
+        const armyHover = this.findArmyAt(pos.x, pos.y);
+        if ((armyHover ? armyHover.id : null) !== this.hoverArmyId) {
+            this.hoverArmyId = armyHover ? armyHover.id : null;
+            this.requestDraw();
+        }
+        if (armyHover) {
+            this.hoverCountry = null;
+            this.hoverProvince = null;
+            this.showArmyTooltip(armyHover, pos);
+            this.canvas.style.cursor = 'pointer';
+            return;
+        }
 
         // 低缩放只画国家：按国家拾取，避免提示未显示的省份
         if (this.scale < this.LOD_COUNTRY) {
@@ -1270,15 +1431,45 @@ const MapView = {
         const moved = Math.abs(e.clientX - this.dragStartX) + Math.abs(e.clientY - this.dragStartY);
         this.isDragging = false;
         this.canvas.style.cursor = 'grab';
-        if (moved < 4) {
-            // 国家级 LOD 下省份未显示，不选中隐藏的省份
-            if (this.scale < this.LOD_COUNTRY) return;
-            const pos = this.getMousePos(e);
-            const world = this.screenToWorld(pos.x, pos.y);
-            const prov = this.findProvinceAt(world.x, world.y);
-            if (prov) this.game.selectProvince(prov.id);
-            else this.game.selectProvince(null);
+        if (moved < 4) this.activateAt(this.getMousePos(e));
+    },
+
+    /**
+     * 点击/轻触的统一处理：
+     *   1) 点到我方部队标记 → 选中该部队（任意缩放层级）；
+     *   2) 已选中部队且点到相邻省份 → 移动（保持选中，可连续推进）；
+     *   3) 否则选中省份查看。
+     */
+    activateAt(pos) {
+        if (!this.ready || !this.game) return;
+        const armyHit = this.findArmyAt(pos.x, pos.y);
+        if (armyHit && armyHit.owner === this.game.playerTag) {
+            this.game.selectArmy(armyHit.id);
+            // 在国家级视野选中部队时自动下钻到省份层级，否则目标省份不可点
+            if (this.scale < this.LOD_COUNTRY) {
+                const c = this.provinceCenter(armyHit.provinceId);
+                if (c) this.centerOn(c.x, c.y, this.LOD_COUNTRY + 0.4);
+            }
+            return;
         }
+        // 国家级 LOD 下省份未显示，不选中隐藏的省份
+        if (this.scale < this.LOD_COUNTRY) return;
+
+        const world = this.screenToWorld(pos.x, pos.y);
+        const prov = this.findProvinceAt(world.x, world.y);
+        if (!prov) {
+            this.game.selectProvince(null);
+            return;
+        }
+        if (this.game.selectedArmy != null) {
+            const army = this.game.armyById(this.game.selectedArmy);
+            if (army && prov.id !== army.provinceId && this.game.isAdjacent(army.provinceId, prov.id)) {
+                const r = this.game.moveSelectedArmy(prov.id);
+                if (!r.ok && typeof UI !== 'undefined' && UI) UI.notify(r);
+                return;
+            }
+        }
+        this.game.selectProvince(prov.id);
     },
 
     onWheel(e) {
@@ -1294,6 +1485,7 @@ const MapView = {
         // 缩放可能跨过 LOD 分界，旧的悬停目标已失效
         this.hoverProvince = null;
         this.hoverCountry = null;
+        this.hoverArmyId = null;
         this.hideTooltip();
         this.clampCamera();
         this.requestDraw();
@@ -1420,13 +1612,7 @@ const MapView = {
             } else { cx = this.lastMouseX; cy = this.lastMouseY; }
             const moved = Math.abs(cx - this.dragStartX) + Math.abs(cy - this.dragStartY);
             this.isDragging = false;
-            if (moved < 8 && this.scale >= this.LOD_COUNTRY) {
-                const pos = this.getPos(cx, cy);
-                const world = this.screenToWorld(pos.x, pos.y);
-                const prov = this.findProvinceAt(world.x, world.y);
-                if (prov) this.game.selectProvince(prov.id);
-                else this.game.selectProvince(null);
-            }
+            if (moved < 8) this.activateAt(this.getPos(cx, cy));
         }
     },
 
@@ -1450,11 +1636,50 @@ const MapView = {
         return tip;
     },
 
+    /** 部队标记的悬停提示（任意缩放层级都可用） */
+    showArmyTooltip(army, pos) {
+        const tip = this.tooltipEl();
+        const tpl = this.game.divisions?.[army.template];
+        const prov = this.game.provinceById(army.provinceId);
+        const mine = army.owner === this.game.playerTag;
+        const owner = mine ? '我方部队' : `敌方：${this.game.countryDisplayName(army.owner)}`;
+        tip.innerHTML = `<b>${tpl ? `${tpl.icon} ${tpl.name}` : army.template}</b>
+            <br/>${prov ? prov.name : army.provinceId} · ${owner}
+            <br/>兵力 ${Math.round(army.strength)} · 组织度 ${Math.round(army.org * 100)}%
+            ${mine ? '<br/><span style="color:#7dd3fc">点击选中该部队</span>' : ''}`;
+        tip.style.display = 'block';
+        tip.style.left = (pos.x + 14) + 'px';
+        tip.style.top = (pos.y + 14) + 'px';
+    },
+
     showTooltip(prov, pos) {
         const tip = this.tooltipEl();
         const owner = this.game.ownerOf(prov.id);
-        const ownerName = owner ? this.game.countryDisplayName(owner) : '无主';
-        tip.innerHTML = `<b>${prov.name}</b><br/>归属：${ownerName}`;
+        let ownerName = owner ? this.game.countryDisplayName(owner) : '无主';
+        // 非可玩国家：countryDisplayName 回退为 ISO3 代码，改用地图元数据里的中文名
+        if (owner && ownerName === owner) {
+            const meta = this.countryMeta && this.countryMeta.get(owner);
+            if (meta) ownerName = meta.name;
+        }
+        let html = `<b>${prov.name}</b><br/>归属：${ownerName}`;
+
+        // 驻扎部队概览（查看部队时不必再打开面板）
+        const armies = this.game.armiesIn(prov.id).filter((a) => a.strength > 0);
+        if (armies.length > 0) {
+            const mine = armies.filter((a) => a.owner === this.game.playerTag).length;
+            html += `<br/>⚔ 部队：${armies.length}${mine ? `（我方 ${mine}）` : ''}`;
+        }
+        const hoveredArmy = this.findArmyAt(pos.x, pos.y);
+        if (hoveredArmy && hoveredArmy.owner === this.game.playerTag) {
+            html += '<br/><span style="color:#7dd3fc">点击选中该部队</span>';
+        } else if (this.game.selectedArmy != null) {
+            const sel = this.game.armyById(this.game.selectedArmy);
+            if (sel && prov.id !== sel.provinceId && this.game.isAdjacent(sel.provinceId, prov.id)) {
+                html += '<br/><span style="color:#34d399">点击移动部队到该省</span>';
+            }
+        }
+
+        tip.innerHTML = html;
         tip.style.display = 'block';
         tip.style.left = (pos.x + 14) + 'px';
         tip.style.top = (pos.y + 14) + 'px';

@@ -166,7 +166,9 @@
                 </div>
                 <!-- 小地图 -->
                 <div id="minimapContainer"></div>
-                <div class="map-hint">拖动平移 · 滚轮缩放 · 点击选择省份</div>
+                <!-- 选中省份速览（查看驻军 / 快捷部署） -->
+                <div id="provinceCard" class="province-card hidden"></div>
+                <div class="map-hint">拖动平移 · 滚轮缩放 · 点省份查看 · 点部队后点相邻省份移动</div>
             </div>
         </div>
 
@@ -221,6 +223,9 @@
             <div id="eventChoices" class="event-choices"></div>
         </div>
     </div>
+
+    <!-- 轻量提示条（部署 / 移动反馈） -->
+    <div id="toast" class="toast"></div>
 
     <!-- 加载提示 -->
     <div id="loadingOverlay" class="loading-overlay hidden">

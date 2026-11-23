@@ -112,9 +112,9 @@ section('1. 初始化与面板渲染');
             '1159316799': { name: '巴黎', owner: 'FRA', bbox: [0, 0, 10, 10] },
         },
         neighbors: {
-            '1159312769': [1159314695],
+            '1159312769': [1159314695, 1159314679],
             '1159314695': [1159312769, 1159314679],
-            '1159314679': [1159314695],
+            '1159314679': [1159314695, 1159312769],
         },
     });
 
@@ -214,6 +214,47 @@ section('3. 弹窗、事件与胜负');
     Game.speed = 0;
     UI.refreshAll();
     assert(!documentStub.getElementById('pauseHint').classList.contains('hidden'), '速度回到 0 时再次显示暂停提示');
+}
+
+// ---------- 部队交互：选中 / 移动 / 省份卡 / 快捷部署 ----------
+section('4. 部队交互');
+{
+    Game.startWith('GER');
+    Game.selectProvince(null);
+    UI.refreshAll();
+
+    const dr = Game.command({ t: 'deployArmy', country: 'GER', province: 1159312769, template: 'infantry', count: 1 });
+    assert(dr.ok, '部署部队成功');
+    const army = Game.allArmies()[0];
+    assert(!!army, '部队已创建');
+
+    Game.selectArmy(army.id);
+    assert(Game.selectedArmy === army.id, 'selectArmy 记录选中部队');
+    assert(Game.selectedProvince === 1159312769, 'selectArmy 同步选中省份');
+
+    const opts = Game.moveOptionsFor(army.id);
+    assert(opts.some((o) => o.id === 1159314695 && o.ok), '相邻省份解析为可移动');
+    assert(opts.every((o) => typeof o.name === 'string'), '移动选项带省份名');
+
+    Game.selectProvince(1159312769);
+    const cardHtml = documentStub.getElementById('provinceCard').innerHTML;
+    assert(!documentStub.getElementById('provinceCard').classList.contains('hidden'), '选中省份后速览卡显示');
+    assert(cardHtml.includes('驻扎部队'), '速览卡显示驻扎部队');
+    assert(cardHtml.includes('data-deploy-here'), '速览卡提供快捷部署');
+
+    const before = Game.allArmies().length;
+    const d = UI.deployAt('infantry', 1159312769, 1);
+    assert(d.ok && Game.allArmies().length === before + 1, '速览卡快捷部署新增部队');
+    assert(documentStub.getElementById('toast').textContent.includes('已部署'), '部署后显示提示条');
+
+    const newest = Game.allArmies()[Game.allArmies().length - 1];
+    assert(Game.selectedArmy === newest.id, '部署后自动选中新部队');
+    // 1159314679 没有波兰初始部队，避免进入即有敌军的省份被战斗打光
+    const mv = Game.moveSelectedArmy(1159314679);
+    assert(mv.ok, '选中后移动到相邻省份成功');
+    assert(Game.armyById(newest.id).provinceId === 1159314679, '部队位置已更新');
+    Game.selectProvince(null);
+    assert(documentStub.getElementById('provinceCard').classList.contains('hidden'), '取消选中后速览卡隐藏');
 }
 
 // ============================================================

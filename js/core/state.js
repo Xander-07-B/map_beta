@@ -82,8 +82,9 @@ function createCountry(tag, def) {
  * @param {object} opts.scenario 已通过校验的剧本对象
  * @param {number} [opts.seed]
  * @param {Rng} [opts.rng] 已初始化的 PRNG（存档恢复时复用其状态）
+ * @param {object} [opts.divisions] 部队模板（用于把剧本初始部队解析为实体）
  */
-export function createWorldState({ scenario, seed = 0x1936, rng }) {
+export function createWorldState({ scenario, seed = 0x1936, rng, divisions }) {
     const r = rng || new Rng(seed);
 
     const s = {
@@ -139,6 +140,33 @@ export function createWorldState({ scenario, seed = 0x1936, rng }) {
             damage: 0,
             controller: owner,
         };
+    }
+
+    // 剧本初始部队：地图上开局的单位必须从一开始就是可指挥的 army 实体，
+    // 而不是仅用于呈现的 garrison 计数。按模板兵力拆成若干支便于逐格推进。
+    for (const init of scenario.initialArmies || []) {
+        const tpl = divisions?.[init.template];
+        const c = s.countries[init.country];
+        if (!tpl || !c || !s.provinces[init.province] || !Number.isFinite(init.count)) continue;
+        const total = Math.max(1, Math.floor(init.count));
+        const perArmy = Math.max(1, Math.floor(init.divisionsPerArmy ?? 6));
+        let remaining = total;
+        while (remaining > 0) {
+            const n = Math.min(perArmy, remaining);
+            remaining -= n;
+            s.armies.push({
+                id: s.nextArmyId++,
+                owner: init.country,
+                provinceId: init.province,
+                template: init.template,
+                strength: tpl.baseStrength * n,
+                org: tpl.org ?? 1,
+                speed: tpl.speed,
+                experience: 0,
+            });
+        }
+        // 已转为可指挥部队的驻军不再重复绘制
+        if (c.garrison && init.province in c.garrison) delete c.garrison[init.province];
     }
 
     // 州

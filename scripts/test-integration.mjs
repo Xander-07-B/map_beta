@@ -61,8 +61,11 @@ section('1. 开局流程：加载剧本 → 选择国家 → 构建状态');
     Game.startWith('GER');
     assertEqual(Game.playerTag, 'GER', '玩家为 GER');
     assertEqual(Game.state.players.GER.isHuman, true, '玩家标记 isHuman');
-    assertEqual(Object.keys(Game.state.countries).length, 3, '3 个国家就绪');
-    assertEqual(Object.keys(Game.state.provinces).length, 20, '20 个省份就绪');
+    assertEqual(Game.campaign.scenario.playable.length, 3, '3 个可玩国家');
+    assertEqual(Object.keys(Game.state.countries).length, 250, '250 个国家/归属方就绪');
+    assertEqual(Object.keys(Game.state.provinces).length, 4594, '4,594 个省份就绪');
+    assertEqual(Game.armiesOf('GER').length, 7, '德国初始部队已转为可指挥实体');
+    assertEqual(Game.armiesOf('POL').length, 5, '波兰初始部队已转为可指挥实体');
     assertEqual(Game.countryDisplayName('GER'), '德国', 'l10n 解析国家名');
     assertEqual(Game.countryDisplayName('POL'), '波兰', 'l10n 解析国家名');
 }
@@ -85,8 +88,9 @@ section('2. 省份视图：合并战役状态与地图元数据');
     assertEqual(Game.ownerOf(1159312769), 'GER', 'ownerOf 读战役控制方');
     assertEqual(Game.ownerOf(999999), null, '非剧本省份 ownerOf 返回 null（地图回退）');
 
-    const g = Game.garrisons();
-    assertEqual(g.some(x => x.owner === 'GER' && x.provinceId === 1159312769), true, '驻军存在性可读');
+    const berlinArmies = Game.armiesIn(1159312769);
+    assert(berlinArmies.length > 0 && berlinArmies.every(a => a.owner === 'GER'), '柏林初始部队是可指挥实体');
+    assertEqual(Game.garrisons().some(x => x.owner === 'GER' && x.provinceId === 1159312769), false, '驻军不再作为独立标记重复存在');
 }
 
 // ============================================================
@@ -163,7 +167,11 @@ section('7. 经济与军事闭环（经 Game 门面）');
 {
     // 邻接表：真实环境由 MapView.loadData 注入，这里手动注入
     Game.campaign.setMapIndex({
-        neighbors: { '1159312769': [1159314695], '1159314695': [1159312769] },
+        neighbors: {
+            '1159312769': [1159314695, 1159314679],
+            '1159314695': [1159312769],
+            '1159314679': [1159312769],
+        },
     });
 
     const steel0 = Game.countryById('GER').resources.steel;
@@ -182,11 +190,13 @@ section('7. 经济与军事闭环（经 Game 门面）');
     assert(Game.lastEconomy !== null, '门面暴露最近一次经济结算');
 
     // 军事：部署 → 移动 → 占领
+    const armiesBefore = Game.allArmies().length;
     assert(Game.command({ t: 'deployArmy', country: 'GER', province: 1159312769, template: 'infantry', count: 1 }).ok, '经门面部署部队');
-    assertEqual(Game.allArmies().length, 1, '部队已创建');
-    const army = Game.allArmies()[0];
-    assert(Game.command({ t: 'moveArmy', armyId: army.id, to: 1159314695 }).ok, '经门面移动部队');
-    assertEqual(Game.ownerOf(1159314695), 'GER', '移动后占领该省份');
+    assertEqual(Game.allArmies().length, armiesBefore + 1, '部队已创建');
+    const army = Game.allArmies()[Game.allArmies().length - 1];
+    // 1159314679 已在第 3 节随州归属转入 GER，且没有波兰初始部队驻扎
+    assert(Game.command({ t: 'moveArmy', armyId: army.id, to: 1159314679 }).ok, '经门面移动部队');
+    assertEqual(Game.ownerOf(1159314679), 'GER', '移动后控制该省份');
 
     // 生产队列：追加 / 调整 / 取消（全部走命令管道）
     assertEqual(Game.countryById('GER').production.length, 1, '产线为追加而非覆盖');

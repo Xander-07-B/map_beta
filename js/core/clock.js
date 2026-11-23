@@ -69,17 +69,17 @@ export class Clock {
         this._last = 0;
     }
 
-    /** 当前游戏日期（每 tick 前进 2 天） */
+    /** 当前游戏日期（每 tick 前进 TICK_GAME_DAYS 天） */
     get date() {
         return addTicksToDate(this.startDate, this.tick);
     }
 
-    /** 已过游戏日数 = tick × 2 */
+    /** 已过游戏日数 = tick × TICK_GAME_DAYS */
     get gameDay() {
         return this.tick * TICK_GAME_DAYS;
     }
 
-    /** 是否为月界（每 15 tick 一次，即每 30 游戏日） */
+    /** 是否为月界（每 30 tick 一次，即每 30 游戏日） */
     get isMonthStart() {
         return this.tick > 0 && this.gameDay % DAYS_PER_MONTH === 0;
     }
