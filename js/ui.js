@@ -7,14 +7,19 @@
 const UI = {
     currentPanel: 'overview',
     _eventPauseSpeed: 1,
+    _lastPanelSignature: null,   // 上次渲染面板时的数据签名（避免无变化时反复重建 DOM）
+    _panelMouse: null,           // 鼠标在面板内容区内的视口坐标（悬停镜像用）
 
     init(game) {
         this.game = game;
+        this._lastPanelSignature = null;
+        this._panelMouse = null;
         this.bindIconRail();
         this.bindMapTools();
         this.bindTopBar();
         this.bindModal();
         this.bindPanelModal();
+        this.bindPanelHover();
     },
 
     // 安全翻译（缺 key 回退，不抛错到渲染层）
@@ -53,6 +58,7 @@ const UI = {
         });
         document.getElementById('panelModalTitle').textContent = this.panelTitles[panel] || panel;
         this.renderPanel(panel);
+        this._lastPanelSignature = this.panelSignature();
         document.getElementById('panelModal').classList.remove('hidden');
         document.getElementById('panelModalBackdrop').classList.remove('hidden');
         requestAnimationFrame(() => {
@@ -89,13 +95,79 @@ const UI = {
         if (!this.game || !this.game.state) return;
         this.updateTopBar();
         this.updateBottomBar();
-        // 面板关闭时不要反复重建隐藏的 DOM；打开时保留滚动位置
+        // 面板关闭时不要反复重建隐藏的 DOM；打开时也只在数据签名变化时重建，
+        // 否则每 400ms 重建一次会销毁鼠标下的选项元素，导致 hover 样式闪烁
         const pm = document.getElementById('panelModal');
         if (pm && !pm.classList.contains('hidden')) {
-            const content = document.getElementById('panelContent');
-            const scrollTop = content.scrollTop;
-            this.renderPanel(this.currentPanel);
-            content.scrollTop = scrollTop;
+            const sig = this.panelSignature();
+            if (sig !== this._lastPanelSignature) {
+                this._lastPanelSignature = sig;
+                const content = document.getElementById('panelContent');
+                const scrollTop = content.scrollTop;
+                this.renderPanel(this.currentPanel);
+                content.scrollTop = scrollTop;
+            }
+        }
+    },
+
+    /**
+     * 面板渲染内容的轻量数据签名：涵盖各面板展示的全部可变数据。
+     * 签名不变说明渲染结果不变，可以跳过重建（避免悬停选项闪烁）。
+     */
+    panelSignature() {
+        const g = this.game;
+        const s = g.state;
+        if (!s || !g.playerTag) return '';
+        const tag = g.playerTag;
+        const c = s.countries[tag];
+        if (!c) return '';
+        return JSON.stringify([
+            tag, g.selectedProvince,
+            c.politicalPower, c.manpower, c.population, c.civs, c.mils, c.docks,
+            c.stability, c.warSupport, c.legitimacy,
+            c.resources, c.equipment, c.construction, c.production,
+            c.tech, c.unlockedTemplates, c.relations, c.garrison, c.flags, c.bonuses,
+            c.activeFocus,
+            s.focuses[tag], s.decisions[tag], s.research[tag],
+            s.provinces, s.armies, s.wars, s.alliances, s.missions,
+            s.history.length, s.log.length,
+        ]);
+    },
+
+    // ===================== 面板悬停镜像 =====================
+    // 面板 DOM 重建后，鼠标仍停留的位置上的元素是新节点，浏览器可能不会立即
+    // 把 :hover 应用到新节点，表现为选项悬停样式闪烁。重建后用 .ui-hover 类
+    // 镜像 :hover 样式（与 CSS 中的 :hover 规则同声明），鼠标一移动即交还给
+    // 原生 :hover。
+    PANEL_HOVER_SELECTORS: ['.btn-action', '.focus-card', '.tech-card', '.tech-slot-item', '.panel-row'],
+
+    bindPanelHover() {
+        const content = document.getElementById('panelContent');
+        content.addEventListener('mousemove', (e) => {
+            this._panelMouse = { x: e.clientX, y: e.clientY };
+            this.clearHoverMirror(content);
+        });
+        content.addEventListener('mouseleave', () => {
+            this._panelMouse = null;
+            this.clearHoverMirror(content);
+        });
+    },
+
+    clearHoverMirror(content) {
+        content.querySelectorAll('.ui-hover').forEach((el) => el.classList.remove('ui-hover'));
+    },
+
+    /** 面板重建后，把悬停样式镜像到鼠标当前所在的可悬停元素及其容器 */
+    restorePanelHover(content) {
+        if (!this._panelMouse || typeof document.elementFromPoint !== 'function') return;
+        const el = document.elementFromPoint(this._panelMouse.x, this._panelMouse.y);
+        if (!el || !content.contains(el)) return;
+        let node = el;
+        while (node && node !== content) {
+            if (this.PANEL_HOVER_SELECTORS.some((sel) => node.matches(sel))) {
+                node.classList.add('ui-hover');
+            }
+            node = node.parentElement;
         }
     },
 
@@ -253,6 +325,7 @@ const UI = {
         }
         content.innerHTML = html;
         this.bindPanelActions(panel);
+        this.restorePanelHover(content);
     },
 
     // ----- 总览 -----
@@ -344,12 +417,14 @@ const UI = {
             ${decisions.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">暂无可用决议</div>' :
                 decisions.map(d => {
                     const dec = d.decision;
-                    const can = !this.game.canCommand({ t: 'executeDecision', country: tag, decisionId: d.id });
+                    // canCommand 约定：可执行返回 null，不可执行返回 { ok:false, err }
+                    // 返回非 null 时按钮应禁用
+                    const blocked = this.game.canCommand({ t: 'executeDecision', country: tag, decisionId: d.id });
                     return `<div class="focus-card">
                         <div style="font-weight:600">${this.tt('decision.' + d.id)}</div>
                         <div style="font-size:11px;color:var(--text-dim);margin-top:3px">${this.tt('decision.' + d.id + '.desc')}</div>
                         <div style="font-size:11px">成本 ${dec.cost?.politicalPower || 0} PP</div>
-                        <button class="btn-action" data-decision="${d.id}" ${can ? 'disabled' : ''}>执行决议</button>
+                        <button class="btn-action" data-decision="${d.id}" ${blocked ? 'disabled' : ''}>执行决议</button>
                     </div>`;
                 }).join('')}
         </div>`;
@@ -482,7 +557,7 @@ const UI = {
                             ${adj.length === 0 ? '<span style="font-size:11px;color:var(--text-dim)">无可移动方向</span>' :
                                 adj.map((nid) => {
                                     const n = this.game.provinceById(Number(nid));
-                                    const blocked = !this.game.canCommand({ t: 'moveArmy', armyId: a.id, to: Number(nid) });
+                                    const blocked = this.game.canCommand({ t: 'moveArmy', armyId: a.id, to: Number(nid) });
                                     return `<button class="btn-action" data-move-army="${a.id}" data-to="${nid}" ${blocked ? 'disabled' : ''}>
                                         ${n ? n.name : nid}</button>`;
                                 }).join('')}
@@ -494,15 +569,15 @@ const UI = {
         <div class="panel-section">
             <h4>部署部队</h4>
             <div style="font-size:11px;color:var(--text-dim);margin-bottom:8px">
-                部署需消耗人力与装备库存。目标省份：<b>${selProv ? selProv.name : '未选择（默认首个控制省份）'}</b>
+                部署需消耗人力与装备库存。目标省份：<b>${selProv ? (this.game.provinceById(selProv)?.name || selProv) : '未选择（默认首个控制省份）'}</b>
             </div>
             ${templates.length === 0 ? '<div style="font-size:12px;color:var(--text-dim)">未解锁任何部队模板，需先研究对应科技。</div>' :
                 templates.map((tplId) => {
                     const tpl = divisions[tplId];
                     const cost = this.game.divisionCost(tplId);
-                    const target = selProv && myProvinces.some((p) => p.id === selProv.id)
-                        ? selProv.id : myProvinces[0]?.id;
-                    const can = !this.game.canCommand({
+                    const target = selProv && myProvinces.some((p) => p.id === selProv)
+                        ? selProv : myProvinces[0]?.id;
+                    const blocked = this.game.canCommand({
                         t: 'deployArmy', country: tag, province: target, template: tplId, count: 1,
                     });
                     return `<div class="focus-card">
@@ -511,7 +586,7 @@ const UI = {
                             人力 ${cost.manpower} · ${Object.entries(cost.equipment).map(([k, v]) =>
                                 `${this.game.equipment[k]?.name || k}×${v}`).join('、') || '无装备消耗'}
                         </div>
-                        <button class="btn-action" data-deploy="${tplId}" ${can ? 'disabled' : ''}>部署 1 支</button>
+                        <button class="btn-action" data-deploy="${tplId}" ${blocked ? 'disabled' : ''}>部署 1 支</button>
                     </div>`;
                 }).join('')}
         </div>`;
@@ -564,8 +639,8 @@ const UI = {
         <div class="panel-section">
             <h4>科技树（${rows.length} 项，可研究 ${rows.filter((x) => x.prereqOk && !x.done && !x.busy).length} 项）</h4>
             ${rows.map(({ id, tech, done: isDone, busy: isBusy, prereqOk }) => {
-                const can = !isDone && !isBusy && prereqOk && slotsFree > 0 &&
-                    !this.game.canCommand({ t: 'startResearch', country: tag, techId: id });
+                const blocked = !isDone && !isBusy && prereqOk && slotsFree > 0 &&
+                    this.game.canCommand({ t: 'startResearch', country: tag, techId: id });
                 const missing = (tech.requires || []).filter((pre) => !done[pre]);
                 return `<div class="tech-card ${isDone ? 'done' : (isBusy ? 'active' : (prereqOk ? '' : 'locked'))}">
                     <div class="tc-name">${tech.icon || '⚛'} ${tech.name}</div>
@@ -573,7 +648,7 @@ const UI = {
                     <div style="font-size:11px;color:var(--text-dim);margin-top:2px">${tech.effect || ''}</div>
                     ${!isDone && !isBusy ? `
                         ${!prereqOk ? `<div style="font-size:11px;color:var(--text-dim)">前置：${missing.join('、')}</div>` : ''}
-                        <button class="btn-action" data-tech="${id}" ${can ? 'disabled' : ''}>开始研究</button>` : ''}
+                        <button class="btn-action" data-tech="${id}" ${blocked ? 'disabled' : ''}>开始研究</button>` : ''}
                 </div>`;
             }).join('')}
         </div>`;
@@ -608,14 +683,14 @@ const UI = {
                 const rel = c.relations?.[oid] || 0;
                 const other = this.game.countryById(oid);
                 const cls = rel > 30 ? 'pos' : (rel < -30 ? 'neg' : '');
-                const canWar = !this.game.canCommand({ t: 'declareWar', from: tag, to: oid });
-                const canPeace = !this.game.canCommand({ t: 'makePeace', from: tag, to: oid });
+                const blockWar = this.game.canCommand({ t: 'declareWar', from: tag, to: oid });
+                const blockPeace = this.game.canCommand({ t: 'makePeace', from: tag, to: oid });
                 return `<div class="diplo-card">
                     <div class="dc-name">${other.flag} ${this.tt(other.name)} ${other.faction ? '☥' : ''}</div>
                     <div class="dc-rel ${cls}">关系: ${Math.round(rel)} ${rel > 0 ? '↑' : '↓'}</div>
                     <div style="margin-top:6px">
-                        <button class="btn-action" data-diplo="war" data-target="${oid}" ${canWar ? 'disabled' : ''}>宣战</button>
-                        <button class="btn-action" data-diplo="peace" data-target="${oid}" ${canPeace ? 'disabled' : ''}>议和</button>
+                        <button class="btn-action" data-diplo="war" data-target="${oid}" ${blockWar ? 'disabled' : ''}>宣战</button>
+                        <button class="btn-action" data-diplo="peace" data-target="${oid}" ${blockPeace ? 'disabled' : ''}>议和</button>
                         <button class="btn-action" data-diplo="relation" data-target="${oid}">改善(+10)</button>
                     </div>
                 </div>`;

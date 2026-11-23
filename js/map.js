@@ -112,7 +112,7 @@ const MapView = {
     fitScale: 0.3, minScale: 0.25, maxScale: 24.0,
 
     // === 交互状态 ===
-    hoverProvince: null, hoverCountry: null, selectedProvince: null,
+    hoverProvince: null, hoverCountry: null,
     isDragging: false, isPinching: false,
     dragStartX: 0, dragStartY: 0, lastMouseX: 0, lastMouseY: 0,
     pinchStartDist: 0, pinchStartScale: 1, pinchMid: { x: 0, y: 0 },
@@ -137,7 +137,6 @@ const MapView = {
         };
         this.hoverProvince = null;
         this.hoverCountry = null;
-        this.selectedProvince = null;
         this._fillCaches = {};
         this._miniCache = null;
         this._countryBaseCache = null;
@@ -1114,9 +1113,9 @@ const MapView = {
                 ctx.stroke(path);
             }
         }
-        // 选中高亮
-        if (this.selectedProvince) {
-            const path = this.paths.get(this.selectedProvince);
+        // 选中高亮（选中状态由 Game.selectProvince 维护，此处只读）
+        if (this.game.selectedProvince) {
+            const path = this.paths.get(this.game.selectedProvince);
             if (path) {
                 ctx.strokeStyle = this.selectedStrokeColor;
                 ctx.lineWidth = 3 / this.scale;

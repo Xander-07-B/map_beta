@@ -733,7 +733,7 @@ button {
     border-radius: var(--radius-sm);
     font-size: 13px;
 }
-.panel-row:hover { background: rgba(255, 255, 255, 0.035); }
+.panel-row:hover, .panel-row.ui-hover { background: rgba(255, 255, 255, 0.035); }
 .panel-row .pr-label { color: var(--text-dim); }
 .panel-row .pr-value { font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; }
 .panel-row .pr-value.pos { color: var(--green); }
@@ -763,7 +763,7 @@ button {
     cursor: pointer;
     transition: background .16s ease, border-color .16s ease;
 }
-.tech-card:hover { border-color: rgba(59, 130, 246, 0.5); background: rgba(59, 130, 246, 0.06); }
+.tech-card:hover, .tech-card.ui-hover { border-color: rgba(59, 130, 246, 0.5); background: rgba(59, 130, 246, 0.06); }
 .tech-card.active { border-color: rgba(59, 130, 246, 0.6); background: var(--accent-soft); }
 .tech-card.done { opacity: .5; }
 .tech-card.locked { opacity: .35; cursor: not-allowed; }
@@ -796,7 +796,7 @@ button {
     min-height: 60px;
     display: flex; flex-direction: column; align-items: center; justify-content: center;
 }
-.tech-slot-item:hover { border-color: var(--accent); color: var(--text); }
+.tech-slot-item:hover, .tech-slot-item.ui-hover { border-color: var(--accent); color: var(--text); }
 .tech-slot-item.filled {
     border-style: solid;
     border-color: rgba(59, 130, 246, 0.5);
@@ -816,7 +816,7 @@ button {
     margin-right: 6px;
     margin-bottom: 6px;
 }
-.btn-action:hover:not(:disabled) {
+.btn-action:hover:not(:disabled), .btn-action.ui-hover:not(:disabled) {
     background: rgba(59, 130, 246, 0.24);
     border-color: rgba(96, 165, 250, 0.7);
     color: #fff;
@@ -846,7 +846,7 @@ button {
     cursor: pointer;
     transition: background .16s ease, border-color .16s ease;
 }
-.focus-card:hover { border-color: rgba(59, 130, 246, 0.5); background: rgba(59, 130, 246, 0.06); }
+.focus-card:hover, .focus-card.ui-hover { border-color: rgba(59, 130, 246, 0.5); background: rgba(59, 130, 246, 0.06); }
 .focus-card.done { opacity: .45; }
 .focus-card.available { border-color: rgba(59, 130, 246, 0.35); }
 
@@ -1236,14 +1236,17 @@ html[data-theme="light"] #panelModal {
 html[data-theme="light"] #panelModalBackdrop { background: rgba(15, 23, 42, 0.32); }
 html[data-theme="light"] .panel-modal-close { background: rgba(15, 23, 42, 0.04); }
 html[data-theme="light"] .panel-modal-close:hover { background: rgba(15, 23, 42, 0.08); }
-html[data-theme="light"] .panel-row:hover { background: rgba(15, 23, 42, 0.04); }
+html[data-theme="light"] .panel-row:hover,
+html[data-theme="light"] .panel-row.ui-hover { background: rgba(15, 23, 42, 0.04); }
 html[data-theme="light"] .panel-bar { background: rgba(15, 23, 42, 0.08); }
 html[data-theme="light"] .tech-card,
 html[data-theme="light"] .diplo-card,
 html[data-theme="light"] .focus-card,
 html[data-theme="light"] .army-card { background: rgba(15, 23, 42, 0.03); }
 html[data-theme="light"] .tech-card:hover,
-html[data-theme="light"] .focus-card:hover { background: rgba(37, 99, 235, 0.06); }
+html[data-theme="light"] .tech-card.ui-hover,
+html[data-theme="light"] .focus-card:hover,
+html[data-theme="light"] .focus-card.ui-hover { background: rgba(37, 99, 235, 0.06); }
 html[data-theme="light"] .tech-card.active { background: var(--accent-soft); }
 html[data-theme="light"] .tech-slot-item { background: rgba(15, 23, 42, 0.02); }
 html[data-theme="light"] .tech-slot-item.filled { background: var(--accent-soft); }
@@ -1253,7 +1256,8 @@ html[data-theme="light"] .btn-action {
     background: rgba(37, 99, 235, 0.10);
     border-color: rgba(37, 99, 235, 0.30);
 }
-html[data-theme="light"] .btn-action:hover:not(:disabled) {
+html[data-theme="light"] .btn-action:hover:not(:disabled),
+html[data-theme="light"] .btn-action.ui-hover:not(:disabled) {
     color: #1e3a8a;
     background: rgba(37, 99, 235, 0.18);
     border-color: rgba(37, 99, 235, 0.55);
