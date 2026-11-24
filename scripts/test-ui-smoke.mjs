@@ -25,13 +25,13 @@ function section(name) { console.log('\n■ ' + name); }
 function makeEl(id) {
     const el = {
         id,
-        innerHTML: '',
         textContent: '',
         scrollTop: 0,
         disabled: false,
         title: '',
         dataset: {},
         style: {},
+        children: [],
         _listeners: {},
         classList: {
             _set: new Set(),
@@ -47,11 +47,17 @@ function makeEl(id) {
         addEventListener(type, fn) { (this._listeners[type] ||= []).push(fn); },
         removeEventListener() {},
         querySelectorAll() { return []; },
-        appendChild() {},
+        appendChild(child) { this.children.push(child); return child; },
         setAttribute() {},
         getBoundingClientRect() { return { left: 0, top: 0, width: 800, height: 600 }; },
         getContext() { return null; },
     };
+    // innerHTML 赋值时清空子节点（模拟真实 DOM 行为，供区域筛选测试统计卡片数）
+    let _html = '';
+    Object.defineProperty(el, 'innerHTML', {
+        get() { return _html; },
+        set(v) { _html = v; el.children.length = 0; },
+    });
     return el;
 }
 
@@ -73,6 +79,8 @@ const sandbox = {
     cancelAnimationFrame: () => {},
     setTimeout: () => 0,
     clearTimeout: () => {},
+    addEventListener: () => {},
+    removeEventListener: () => {},
     fetch: async (url) => {
         const raw = readFileSync(path.join(process.cwd(), url), 'utf8');
         return { ok: true, json: async () => JSON.parse(raw) };
@@ -94,11 +102,12 @@ sandbox.globalThis = sandbox;
 sandbox.alert = () => {};
 
 const ctx = vm.createContext(sandbox);
-for (const f of ['js/render/data.js', 'js/render/game.js', 'js/render/ui.js']) {
+for (const f of ['js/render/data.js', 'js/render/game.js', 'js/render/ui.js', 'js/render/main.js']) {
     vm.runInContext(readFileSync(f, 'utf8'), ctx, { filename: f });
 }
 const Game = sandbox.Game;
 const UI = sandbox.UI;
+const App = sandbox.App;
 
 // ---------- 准备一局有内容的游戏 ----------
 section('1. 初始化与面板渲染');
@@ -378,6 +387,42 @@ section('5. 空军、海军、外交与战争面板');
     assertEqual(Game.countryById('GER').construction.length, 1, '建造项目已入队');
     assert(Game.command({ t: 'cancelConstruction', country: 'GER', index: 0 }).ok, '取消建造');
     assertEqual(Game.countryById('GER').construction.length, 0, '建造项目已移除');
+}
+
+// ============================================================
+section('6. 国家选择：区域筛选与搜索');
+{
+    // renderCountryList 需要 campaign.scenario；用已加载的 Game.campaign
+    App.renderCountryList(Game.campaign);
+    const filters = els.countryFilters;
+    const list = els.countryList;
+    assertEqual(filters.children.length, 7, '区域筛选标签 7 个（全部 + 6 大洲）');
+    assertEqual(list.children.length, 250, '默认「全部」展示 250 个国家');
+
+    const countRegion = (region) =>
+        Object.values(Game.campaign.scenario.countries).filter((c) => c.region === region).length;
+
+    // 切到欧洲
+    App._countryRegion = 'europe';
+    App.renderCountryCards();
+    assertEqual(list.children.length, countRegion('europe'), `欧洲区域筛选出 ${countRegion('europe')} 国`);
+
+    // 切到南美洲
+    App._countryRegion = 'south_america';
+    App.renderCountryCards();
+    assertEqual(list.children.length, countRegion('south_america'), `南美洲筛选出 ${countRegion('south_america')} 国`);
+
+    // 搜索：按名称子串
+    App._countryRegion = 'all';
+    App._countrySearch = '德';
+    App.renderCountryCards();
+    const htmls = list.children.map((c) => c.innerHTML);
+    assert(htmls.some((h) => h.includes('德国')), '搜索「德」命中德国');
+
+    // 无匹配时显示空态
+    App._countrySearch = 'zzzz不存在的国家';
+    App.renderCountryCards();
+    assert(list.innerHTML.includes('没有匹配'), '无匹配时显示空态提示');
 }
 
 // ============================================================

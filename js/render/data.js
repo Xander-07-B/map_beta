@@ -18,6 +18,17 @@ const IDEOLOGY = {
     neutral:     { name: '中立',   color: '#6b7484', icon: '○' },
 };
 
+/* ---------- 国家选择区域（与剧本中各国的 region 字段对应） ---------- */
+const REGIONS = [
+    { key: 'all',             label: '全部' },
+    { key: 'europe',          label: '欧洲' },
+    { key: 'asia',            label: '亚洲' },
+    { key: 'africa',          label: '非洲' },
+    { key: 'north_america',   label: '北美洲' },
+    { key: 'south_america',   label: '南美洲' },
+    { key: 'oceania',         label: '大洋洲' },
+];
+
 /* ---------- 资源定义（仅展示用，产出数值在剧本 economy 中） ---------- */
 const RESOURCES = {
     steel:     { name: '钢铁',   icon: '⬢', color: '#8a9099' },
@@ -47,6 +58,7 @@ const TERRAIN = {
 // 暴露到全局
 if (typeof window !== 'undefined') {
     window.IDEOLOGY = IDEOLOGY;
+    window.REGIONS = REGIONS;
     window.RESOURCES = RESOURCES;
     window.TERRAIN = TERRAIN;
 }

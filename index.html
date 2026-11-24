@@ -93,14 +93,23 @@
                     <span class="mb-arrow">›</span>
                 </button>
             </div>
-            <div id="countrySelect" class="country-select hidden">
-                <h3>选择国家</h3>
-                <div id="countryList" class="country-list"></div>
-            </div>
             <div id="aboutBox" class="about-box hidden">
                 <h3>关于</h3>
                 <p>《随便地图》，单人模式。包含完整的地图、政治、经济、工业、科技、生产、外交与军事系统。</p>
                 <p>时间跨度：1936 年 — 1948 年。</p>
+            </div>
+        </div>
+
+        <!-- 选择国家：模态弹窗（点击新游戏后出现） -->
+        <div id="countrySelect" class="country-select hidden" role="dialog" aria-modal="true" aria-labelledby="countrySelectTitle">
+            <div class="country-modal-panel">
+                <div class="country-modal-head">
+                    <h3 id="countrySelectTitle">选择国家</h3>
+                    <button id="countryClose" class="country-close" type="button" title="关闭" aria-label="关闭">✕</button>
+                </div>
+                <div id="countryFilters" class="country-filters"></div>
+                <input id="countrySearch" type="search" class="country-search" placeholder="搜索国家名称…" autocomplete="off" />
+                <div id="countryList" class="country-list"></div>
             </div>
         </div>
     </div>

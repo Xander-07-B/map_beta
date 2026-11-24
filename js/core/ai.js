@@ -260,6 +260,19 @@ function aiAirNavy(s, ctx, idx, tag, command) {
             command({ t: 'deployFleet', country: tag, province: coastal.id, template: shipTpl, count: 1 });
         }
     }
+
+    // 舰队向海域转移：停在沿海陆地的舰队，若邻接海域则移入海面，使海军真正在海上行动
+    for (const f of idx.fleets.get(tag) || EMPTY) {
+        const prov = s.provinces[f.provinceId];
+        if (!prov || !prov.coastal) continue;   // 已在海域或非沿海，不动
+        const seaNb = (ctx.neighbors?.[String(f.provinceId)] || []).find((nid) => {
+            const np = s.provinces[nid];
+            return np && (np.terrain === 'ocean' || np.terrain === 'sea');
+        });
+        if (seaNb != null) {
+            command({ t: 'moveFleet', fleetId: f.id, to: seaNb });
+        }
+    }
 }
 
 /** 选择一个可用的部队模板：已解锁且装备/人力能负担 */

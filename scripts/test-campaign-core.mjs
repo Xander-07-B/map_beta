@@ -125,10 +125,19 @@ section('3. 剧本加载与校验');
 {
     const loaded = await loadScenario('1936', { fetchJson });
     assertEqual(loaded.scenario.id, '1936', '1936 剧本加载成功');
-    assertEqual(loaded.scenario.playable.length, 3, '3 个可玩国家');
+    assertEqual(loaded.scenario.playable.length, 250, '全量 250 个国家均可玩（P1-6 全量剧本）');
     assertEqual(Object.keys(loaded.scenario.countries).length, 250, '全地图 250 个归属方');
-    assertEqual(loaded.scenario.provinces.length, 4594, '全地图 4,594 个省份');
-    assertEqual(Object.keys(loaded.scenario.owners).length, 4594, '所有省份都有归属');
+    const seaProvs = loaded.scenario.provinces.filter((p) => p.terrain === 'ocean');
+    assert(seaProvs.length > 0, `存在海域省份供海军行动（${seaProvs.length} 个）`);
+    assertEqual(loaded.scenario.provinces.length, 4594 + seaProvs.length, '陆地省份 + 海域省份');
+    assertEqual(Object.keys(loaded.scenario.owners).length, 4594, '所有陆地省份都有归属（海域无归属）');
+    assertEqual(loaded.scenario.provinces.filter((p) => p.terrain !== 'ocean').length, 4594, '陆地省份仍为 4594 个');
+    // 自动生成的国家也应有可运转的经济/军事底座（不再是空壳）
+    const genTag = Object.keys(loaded.scenario.countries).find((t) => t !== 'GER' && t !== 'POL' && t !== 'FRA');
+    const genDef = loaded.scenario.countries[genTag];
+    assert(genDef.manpower > 0 && genDef.civs > 0, `生成国家 ${genTag} 有人力的工厂`);
+    assert((genDef.unlockedTemplates || []).includes('infantry'), `生成国家 ${genTag} 解锁步兵模板`);
+    assert(loaded.scenario.initialArmies.some((a) => a.country === genTag), `生成国家 ${genTag} 有初始部队`);
     assertEqual(Object.keys(loaded.focusTrees).length, 1, '国策树引用已解析');
     assertEqual(loaded.events['danzig_demand'] !== undefined, true, '事件引用已解析');
     assertEqual(loaded.decisions['war_bonds'] !== undefined, true, '决议引用已解析');
@@ -547,7 +556,7 @@ section('13. 军事深化：地形 / 战斗宽度 / 组织度 / 补给 / 寻路'
     const testArmy = s.armies.find((x) => x.id === 9001);
     assert(camp.command({ t: 'moveArmyTo', armyId: 9001, to: 3, steps: 5 }).ok, '自动寻路移动命令成功');
     assertEqual(testArmy.provinceId, 2, '推进到敌方边境的己方省份后停下');
-    assert(Math.abs(testArmy.org - 0.995) < 1e-9, '丘陵移动代价 1.25 → 组织度 -0.005');
+    assert(Math.abs(testArmy.org - 0.945) < 1e-9, '移动消耗组织度：基础 0.05 + 丘陵 0.005 → 0.945');
 
     assert(!camp.command({ t: 'setArmyOrder', armyId: 9001, order: 'charge' }).ok, '非法部队指令被拒绝');
     assert(camp.command({ t: 'setArmyOrder', armyId: 9001, order: 'advance' }).ok, '设置进攻指令');
@@ -605,6 +614,34 @@ section('14. 空军与海军：部署 / 移动 / 空战 / 海战 / 轰炸');
     assertEqual(s.countries.GER.equipment.destroyer, shipBefore - 3, '一个驱逐舰编组消耗 3 件装备');
     assert(!camp.command({ t: 'deployFleet', country: 'GER', province: inland.id, template: 'destroyer', count: 1 }).ok, '非沿海省份拒绝部署舰队');
     assert(!camp.command({ t: 'deployFleet', country: 'GER', province: coastal.id, template: 'battleship', count: 1 }).ok, '未解锁舰种拒绝部署');
+
+    // 海域省份：海军可在海面行动，陆军不可进入海域
+    {
+        const idxData = await fetchJson('data/index.json');
+        camp.setMapIndex(idxData);
+        const isSea = (id) => s.provinces[id] && (s.provinces[id].terrain === 'ocean' || s.provinces[id].terrain === 'sea');
+        const coastalWithSea = Object.values(s.provinces).find((p) =>
+            p.controller === 'GER' && p.coastal &&
+            (idxData.neighbors[String(p.id)] || []).some(isSea));
+        assert(!!coastalWithSea, '找到有海域邻接的沿海省份');
+        const seaNb = (idxData.neighbors[String(coastalWithSea.id)] || []).find(isSea);
+
+        // 舰队可从沿海移入海域
+        assert(camp.command({ t: 'deployFleet', country: 'GER', province: coastalWithSea.id, template: 'destroyer', count: 1 }).ok, '沿海部署舰队（海域测试）');
+        const fleet = s.fleets.filter((f) => f.owner === 'GER').pop();
+        assert(camp.command({ t: 'moveFleet', fleetId: fleet.id, to: seaNb }).ok, '舰队移入海域');
+        assertEqual(s.fleets.find((f) => f.id === fleet.id).provinceId, seaNb, '舰队位于海域省份');
+
+        // 陆军不可进入海域
+        assert(camp.command({ t: 'deployArmy', country: 'GER', province: coastalWithSea.id, template: 'infantry', count: 1 }).ok, '沿海部署陆军（海域测试）');
+        const army = s.armies.filter((a) => a.owner === 'GER').pop();
+        const r = camp.command({ t: 'moveArmy', armyId: army.id, to: seaNb });
+        assert(!r.ok && /海域/.test(r.err || ''), '陆军被拒绝进入海域');
+
+        // 海域为中立水域，舰队可直接在海域部署
+        const seaProv = Object.values(s.provinces).find((p) => p.terrain === 'ocean');
+        assert(camp.command({ t: 'deployFleet', country: 'GER', province: seaProv.id, template: 'destroyer', count: 1 }).ok, '海域直接部署舰队');
+    }
 
     // 空战：劣势方损失更多飞机
     const airState = {

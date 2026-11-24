@@ -18,6 +18,14 @@ export const CONSTRUCTION_KINDS = Object.keys(CONSTRUCTION);
 /** 部队指令 */
 export const ARMY_ORDERS = ['hold', 'advance', 'retreat'];
 
+/**
+ * 部队行动的组织度消耗模型：
+ * 每次移动都要付出基础组织度，进入复杂地形再叠加额外代价。
+ * 组织度低于 MOVE_MIN_ORG 的部队无法行动——否则部队可以每 tick 无限移动。
+ */
+export const MOVE_ORG_COST = 0.05;   // 每格移动的基础组织度消耗
+export const MOVE_MIN_ORG = 0.20;    // 发起移动所需的最低组织度
+
 /** 邻接判定：目标省份是否与当前省份相邻（同省视为可移动） */
 export function isAdjacent(ctx, fromId, toId) {
     if (Number(fromId) === Number(toId)) return true;
@@ -64,15 +72,15 @@ export function planPath(s, ctx, fromId, toId, tag) {
     return null;
 }
 
-/** 执行一次移动（含地形移动代价），并把战斗结算排入 pending 队列 */
+/** 执行一次移动（含组织度消耗与地形移动代价），并把战斗结算排入 pending 队列 */
 function applyMove(s, ctx, army, to) {
     army.provinceId = to;
     const province = s.provinces[to];
     const cost = terrainMoveCost(province?.terrain);
-    if (cost > 1) {
-        // 进入山地/森林/沙漠等复杂地形要付出组织度代价
-        army.org = Math.max(0, Math.min(1, army.org - 0.02 * (cost - 1)));
-    }
+    // 基础移动消耗组织度；进入山地/森林/沙漠等复杂地形再叠加额外代价
+    let orgCost = MOVE_ORG_COST;
+    if (cost > 1) orgCost += 0.02 * (cost - 1);
+    army.org = Math.max(0, Math.min(1, army.org - orgCost));
     s.pending.push({ kind: 'battleAt', payload: { provinceId: to } });
 }
 
@@ -260,6 +268,9 @@ export function validateCommand(cmd, s, ctx) {
             const army = s.armies.find((a) => a.id === cmd.armyId);
             if (cmd.country && army.owner !== cmd.country) return err('部队不属于该国');
             if (!s.provinces[cmd.to]) return err(`目标省份不存在: ${cmd.to}`);
+            if (army.org <= MOVE_MIN_ORG) return err('部队组织度不足，无法行动');
+            const target = s.provinces[cmd.to];
+            if (target.terrain === 'sea' || target.terrain === 'ocean') return err('陆军不能进入海域');
             if (!isAdjacent(ctx, army.provinceId, cmd.to)) return err('目标省份不相邻');
             return null;
         }
@@ -316,8 +327,10 @@ export function validateCommand(cmd, s, ctx) {
             if (!(c.unlockedShips || []).includes(cmd.template)) return err(`未解锁该舰种: ${cmd.template}`);
             if (!s.provinces[cmd.province]) return err(`省份不存在: ${cmd.province}`);
             const prov = s.provinces[cmd.province];
-            if (!prov.coastal) return err('舰队只能部署在沿海省份');
-            if (prov.controller !== cmd.country) return err('只能在控制的沿海省份部署舰队');
+            const isSea = prov.terrain === 'sea' || prov.terrain === 'ocean';
+            if (!prov.coastal && !isSea) return err('舰队只能部署在沿海或海域省份');
+            // 海域为中立水域，无需控制即可部署；沿海省份需由本国控制
+            if (!isSea && prov.controller !== cmd.country) return err('只能在控制的沿海省份部署舰队');
             const count = Math.floor(cmd.count || 1);
             if (count < 1) return err('部署数量必须为正数');
             const need = equipmentNeed(tpl, count);
@@ -520,7 +533,9 @@ export function executeCommand(cmd, s, ctx) {
                     const p = s.provinces[path[i]];
                     if (!p || p.controller !== army.owner) break;
                 }
-                applyCommand({ t: 'moveArmy', armyId: army.id, to: path[i], country: army.owner }, s, ctx);
+                // 组织度耗尽或地形阻挡时该步会校验失败，停止后续推进
+                const r = applyCommand({ t: 'moveArmy', armyId: army.id, to: path[i], country: army.owner }, s, ctx);
+                if (!r.ok) break;
             }
             break;
         }

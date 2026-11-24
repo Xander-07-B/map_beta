@@ -1,1 +1,4 @@
 node_modules
+# 海域构建中间产物（由 scripts/build-sea.mjs 生成，build:map 自动重建）
+data/sea.geojson
+data/sea-adj.json

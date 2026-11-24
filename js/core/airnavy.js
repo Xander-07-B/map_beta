@@ -97,7 +97,15 @@ export function computeSupplyAccess(s, ctx) {
             for (const nid of neighbors?.[pid] || []) {
                 if (visited.has(nid)) continue;
                 const np = s.provinces[nid];
-                if (!np || !np.controller) continue;
+                if (!np) continue;
+                // 海域为中立水域：补给网只「近岸」延伸一格，供应靠岸海域的舰队，
+                // 但不向大洋内部继续扩散（远海舰队断补给，符合海战常识）。
+                if (np.terrain === 'sea' || np.terrain === 'ocean') {
+                    visited.add(nid);
+                    out.set(nid, supplyFactorOf(np));
+                    continue;
+                }
+                if (!np.controller) continue;
                 if (!g.friendly.has(np.controller)) continue;
                 visited.add(nid);
                 queue.push(nid);

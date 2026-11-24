@@ -317,24 +317,37 @@ const MapView = {
     buildLineTiles(withPrecise) {
         const p0 = this.topoObjName(this.topoL0);
         const c = this.countryObjName();
+        // meshArcs 的过滤器收到的是几何对象（含 .id），用 .id 判定是否为海域
+        const seaObj = (o) => !!(o && o.id != null && this.isSeaProvince(o.id));
+        // 省份内部边界：排除所有涉及海域的弧段。海域裁剪后与陆地共享海岸线，
+        // 这条线应由海岸线图层绘制，而不是混进省界（否则海岸线颜色/线宽不对）。
+        const notSeaPair = (a, b) => a !== b && !seaObj(a) && !seaObj(b);
+        // 海岸线：陆地单侧引用的弧段，以及「陆地-海域」共享的弧段。
+        // 海域-海域、海域单侧弧段是海域省份之间的网格边，不画。
+        const landCoast = (a, b) => (a === b ? !seaObj(a) : seaObj(a) !== seaObj(b));
         const tiles = {
             // 国家级：内部国界与海岸线分开，避免同一条线被描边两次
             country: this.buildMeshTiles(this.countriesTopo, c, (a, b) => a !== b),
             coastCountry: this.buildMeshTiles(this.countriesTopo, c, (a, b) => a === b),
-            provL0: this.buildMeshTiles(this.topoL0, p0, (a, b) => a !== b),
-            coastL0: this.buildMeshTiles(this.topoL0, p0, (a, b) => a === b),
+            provL0: this.buildMeshTiles(this.topoL0, p0, notSeaPair),
+            coastL0: this.buildMeshTiles(this.topoL0, p0, landCoast),
         };
         if (withPrecise && this.topo) {
             // 精档只需要补 l1 的两套线；国家层与粗档线已在首帧建好，不重复构建
             const p1 = this.topoObjName(this.topo);
             this.lineTiles = {
                 ...(this.lineTiles || {}),
-                provL1: this.buildMeshTiles(this.topo, p1, (a, b) => a !== b),
-                coastL1: this.buildMeshTiles(this.topo, p1, (a, b) => a === b),
+                provL1: this.buildMeshTiles(this.topo, p1, notSeaPair),
+                coastL1: this.buildMeshTiles(this.topo, p1, landCoast),
             };
             return;
         }
         this.lineTiles = tiles;
+    },
+
+    /** 是否为海域省份（无归属、terrain=ocean，由 build-sea 生成） */
+    isSeaProvince(id) {
+        return this.index && this.index.meta[id] ? !!this.index.meta[id].sea : false;
     },
 
     // 将 meshArcs 折线投影后按空间网格合并为 Path2D tile
@@ -482,8 +495,11 @@ const MapView = {
     },
 
     // 省份颜色：运行时归属国优先，其次原始 ISO3 国家色，最后陆地底色
+    // 海域省份（无归属、terrain=ocean）始终用海洋色，与底图海洋一致
     // 这样任何 LOD、任何归属状态下都有颜色，不会露出海洋色
     provinceColor(id) {
+        const meta = this.index && this.index.meta[id];
+        if (meta && meta.sea) return this.oceanColor;
         const game = this.game;
         if (game) {
             const owner = game.ownerOf(id);
@@ -492,7 +508,7 @@ const MapView = {
                 if (c) return this.themeFillColor(c.color);
             }
         }
-        const iso = this.index && this.index.meta[id] ? this.index.meta[id].owner : null;
+        const iso = meta ? meta.owner : null;
         return iso ? this.countryColor(iso) : this.landColor;
     },
 
@@ -531,7 +547,9 @@ const MapView = {
     provinceFillColor(id) {
         if (this.tool === 'terrain' && this.game) {
             const p = this.game.provinceById(id);
-            return this.terrainColor(p && p.terrain);
+            const t = p && p.terrain;
+            if (t === 'ocean' || t === 'sea') return this.oceanColor;
+            return this.terrainColor(t);
         }
         return this.provinceColor(id);
     },
@@ -1259,7 +1277,11 @@ const MapView = {
             for (let c = c0; c <= c1; c++) {
                 const list = cells[r * cols + c];
                 if (!list) continue;
-                for (const g of list) {
+                // 海域（海洋色）先画、陆地后画：海岸线处海域矩形与陆地省份可能有
+                // 网格级的微小重叠，先画海域可让陆地填充覆盖重叠，避免出现海洋色长条。
+                const sorted = list.slice().sort((a, b) =>
+                    (a.color === this.oceanColor ? 0 : 1) - (b.color === this.oceanColor ? 0 : 1));
+                for (const g of sorted) {
                     ctx.fillStyle = g.color;
                     ctx.fill(g.path);
                 }

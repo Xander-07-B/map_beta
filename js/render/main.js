@@ -109,8 +109,19 @@ const App = {
 
     // ===================== 启动菜单 =====================
     bindStartScreen() {
+        const countrySelect = document.getElementById('countrySelect');
+        // 弹窗关闭：✕ 按钮、点击遮罩空白处、Esc
+        document.getElementById('countryClose').addEventListener('click', () => this.closeCountrySelect());
+        countrySelect.addEventListener('click', (e) => {
+            if (e.target === countrySelect) this.closeCountrySelect();
+        });
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && !countrySelect.classList.contains('hidden')) {
+                this.closeCountrySelect();
+            }
+        });
+
         document.getElementById('btnNewGame').addEventListener('click', async () => {
-            const countrySelect = document.getElementById('countrySelect');
             countrySelect.classList.remove('hidden');
             const list = document.getElementById('countryList');
             list.innerHTML = '<div style="color:var(--text-dim);padding:10px">正在加载剧本…</div>';
@@ -142,22 +153,85 @@ const App = {
         });
     },
 
+    closeCountrySelect() {
+        document.getElementById('countrySelect').classList.add('hidden');
+    },
+
     renderCountryList(campaign) {
         const list = document.getElementById('countryList');
+        const filters = document.getElementById('countryFilters');
+        const search = document.getElementById('countrySearch');
         list.innerHTML = '';
         const countries = campaign.scenario.countries;
-        // 全量剧本包含 250 个归属方，但开局只展示有完整内容的可玩国家。
+        // 全量剧本包含 250 个归属方，开局展示全部可玩国家，按区域筛选。
         const tags = Array.isArray(campaign.scenario.playable) && campaign.scenario.playable.length
             ? campaign.scenario.playable.filter((tag) => countries[tag])
             : Object.keys(countries);
+        this._countryCountries = countries;
+        this._countryTags = tags;
+        this._countryRegion = 'all';
+        this._countrySearch = '';
+
+        // 区域筛选标签
+        filters.innerHTML = '';
+        for (const r of REGIONS) {
+            const btn = document.createElement('button');
+            btn.className = 'country-filter-tab' + (r.key === 'all' ? ' active' : '');
+            btn.type = 'button';
+            btn.textContent = r.label;
+            btn.addEventListener('click', () => {
+                this._countryRegion = r.key;
+                filters.querySelectorAll('.country-filter-tab').forEach((b) => b.classList.remove('active'));
+                btn.classList.add('active');
+                this.renderCountryCards();
+            });
+            filters.appendChild(btn);
+        }
+
+        // 名称搜索（用 oninput 而不是 addEventListener：重复点「新游戏」时
+        // 不会累积多个监听器）
+        search.value = '';
+        search.oninput = () => {
+            this._countrySearch = search.value.trim().toLowerCase();
+            this.renderCountryCards();
+        };
+
+        this.renderCountryCards();
+    },
+
+    /** 按当前区域 + 搜索词渲染国家卡片 */
+    renderCountryCards() {
+        const list = document.getElementById('countryList');
+        list.innerHTML = '';
+        const countries = this._countryCountries || {};
+        const region = this._countryRegion || 'all';
+        const q = this._countrySearch || '';
+        const tags = (this._countryTags || []).filter((tag) => {
+            const def = countries[tag];
+            if (!def) return false;
+            if (region !== 'all' && def.region !== region) return false;
+            if (q) {
+                const name = (def.name && def.name.startsWith('l10n.'))
+                    ? (window.Core.t(def.name) || '') : (def.name || '');
+                if (!name.toLowerCase().includes(q) && !tag.toLowerCase().includes(q)) return false;
+            }
+            return true;
+        });
+        if (tags.length === 0) {
+            list.innerHTML = '<div class="country-empty">没有匹配的国家</div>';
+            return;
+        }
         for (const tag of tags) {
             const def = countries[tag];
             const card = document.createElement('div');
             card.className = 'country-card';
             const ideo = IDEOLOGY[def.ideology] || { icon: '○', name: '中立' };
+            // 手写国家的 name 是 l10n key（l10n.country.GER），生成国家的 name 是原始中文名；
+            // 仅对 l10n key 走翻译，原始名直接显示，避免缺失翻译 key 抛错。
+            const name = (def.name && def.name.startsWith('l10n.')) ? window.Core.t(def.name) : def.name;
             card.innerHTML = `
                 <div class="cc-flag" style="background:${def.color}">${def.flag}</div>
-                <div class="cc-name">${window.Core.t(def.name)}</div>
+                <div class="cc-name">${name}</div>
                 <div class="cc-ideo">${ideo.icon} ${ideo.name}</div>
             `;
             card.addEventListener('click', () => this.startGame(tag));
@@ -172,6 +246,7 @@ const App = {
     },
 
     enterGame() {
+        this.closeCountrySelect();
         document.getElementById('startScreen').classList.remove('active');
         document.getElementById('gameScreen').classList.add('active');
 
@@ -247,7 +322,7 @@ const App = {
         if (this.requestFrame) cancelAnimationFrame(this.requestFrame);
         document.getElementById('gameScreen').classList.remove('active');
         document.getElementById('startScreen').classList.add('active');
-        document.getElementById('countrySelect').classList.add('hidden');
+        this.closeCountrySelect();
         if (Game.hasSave()) document.getElementById('btnContinue').disabled = false;
     },
 
