@@ -446,6 +446,164 @@ button {
 .country-card .cc-name { font-size: 14px; font-weight: 600; }
 .country-card .cc-ideo { font-size: 11px; color: var(--text-dim); margin-top: 4px; }
 
+/* ---------- 国家速览 / 快速外交（游戏内点选国家） ---------- */
+.country-info {
+    position: fixed;
+    inset: 0;
+    z-index: 190;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: rgba(3, 7, 16, 0.58);
+    backdrop-filter: blur(6px);
+}
+.ci-panel {
+    display: flex;
+    flex-direction: column;
+    width: min(560px, 100%);
+    max-height: min(84vh, 760px);
+    background: var(--bg-panel);
+    border: 1px solid var(--border-light);
+    border-radius: var(--radius-lg);
+    box-shadow: 0 28px 90px rgba(0, 0, 0, 0.6);
+    backdrop-filter: var(--panel-blur);
+    overflow: hidden;
+}
+.ci-head {
+    display: flex;
+    align-items: flex-start;
+    gap: 12px;
+    padding: 16px 18px;
+    border-bottom: 1px solid var(--border);
+}
+.ci-flag {
+    width: 46px;
+    height: 46px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    font-size: 26px;
+    line-height: 1;
+    background: var(--bg-elev);
+    border: 2px solid var(--border);
+    border-radius: 14px;
+}
+.ci-title { flex: 1 1 auto; min-width: 0; }
+.ci-title h3 {
+    font-size: 18px;
+    font-weight: 700;
+    letter-spacing: .02em;
+    color: var(--text);
+}
+.ci-sub {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.5;
+}
+.ci-close {
+    width: 30px; height: 30px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: rgba(255, 255, 255, 0.04);
+    color: var(--text-dim);
+    font-size: 13px;
+}
+.ci-close:hover {
+    color: var(--text);
+    background: rgba(255, 255, 255, 0.09);
+    border-color: var(--border-light);
+}
+.ci-body {
+    padding: 14px 18px 16px;
+    overflow-y: auto;
+}
+.ci-status {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 14px;
+    padding: 10px 12px;
+    margin-bottom: 12px;
+    font-size: 12px;
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+.ci-status .ci-rel { color: var(--text-dim); }
+.ci-status .ci-rel b { color: var(--text); font-size: 14px; }
+.ci-status .ci-rel.pos b { color: var(--green); }
+.ci-status .ci-rel.neg b { color: var(--red); }
+.ci-war { margin-left: auto; font-weight: 600; color: var(--green); }
+.ci-war.neg { color: var(--red); }
+.ci-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+}
+.ci-stat {
+    padding: 8px 10px;
+    background: rgba(255, 255, 255, 0.025);
+    border: 1px solid var(--border-faint);
+    border-radius: var(--radius-sm);
+    min-width: 0;
+}
+.ci-stat .cs-label {
+    font-size: 10px;
+    color: var(--text-faint);
+    letter-spacing: .06em;
+}
+.ci-stat .cs-value {
+    margin-top: 3px;
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.ci-resources {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+.ci-resources span {
+    padding: 3px 8px;
+    border: 1px solid var(--border-faint);
+    border-radius: var(--pill);
+    background: rgba(255, 255, 255, 0.02);
+}
+.ci-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 14px 18px 18px;
+    border-top: 1px solid var(--border);
+}
+.ci-actions .btn-action { margin: 0; }
+.ci-note {
+    width: 100%;
+    font-size: 12px;
+    color: var(--text-dim);
+    line-height: 1.6;
+}
+html[data-theme="light"] .ci-stat { background: rgba(15, 23, 42, 0.03); }
+html[data-theme="light"] .ci-status { background: rgba(15, 23, 42, 0.03); }
+html[data-theme="light"] .ci-close { background: rgba(15, 23, 42, 0.04); }
+@media (max-width: 520px) {
+    .country-info { padding: 12px; }
+    .ci-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
 .about-box p { color: var(--text-dim); line-height: 1.8; margin-bottom: 6px; font-size: 13px; }
 
 /* ==================== 主游戏界面 ==================== */
@@ -731,6 +889,12 @@ button {
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+}
+.province-card .pc-head-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
 }
 .province-card .pc-name { font-size: 14px; font-weight: 700; color: var(--text); }
 .province-card .pc-close {

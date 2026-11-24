@@ -181,7 +181,7 @@
                 <div id="provinceCard" class="province-card hidden"></div>
                 <!-- 地图视图图例（切换到前线 / 地形 / 省份视图时出现） -->
                 <div id="mapLegend" class="map-legend hidden"></div>
-                <div class="map-hint">拖动平移 · 滚轮 / 双指缩放 · 双击放大 · 点省份查看 · 点部队后点相邻省份移动</div>
+                <div class="map-hint">拖动平移 · 滚轮 / 双指缩放 · 双击放大 · 点省份查看 · 低缩放下点国家查看外交 · 点部队后点相邻省份移动</div>
             </div>
         </div>
 
@@ -207,6 +207,11 @@
             <button class="rail-btn" data-panel="notices"><span class="rb-icon">☰</span><span class="rb-label">通知</span></button>
             <button class="rail-btn" data-panel="log"><span class="rb-icon">▦</span><span class="rb-label">日志</span></button>
         </nav>
+    </div>
+
+    <!-- 国家速览 / 快速外交弹窗 -->
+    <div id="countryInfo" class="country-info hidden" role="dialog" aria-modal="true" aria-labelledby="countryInfoName">
+        <div id="countryInfoPanel" class="ci-panel"></div>
     </div>
 
     <!-- 面板弹窗遮罩 -->

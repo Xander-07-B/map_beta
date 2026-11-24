@@ -26,6 +26,7 @@ const UI = {
         this.bindPanelModal();
         this.bindPanelHover();
         this.bindProvinceCard();
+        this.bindCountryInfo();
     },
 
     // 安全翻译（缺 key 回退，不抛错到渲染层）
@@ -154,6 +155,11 @@ const UI = {
         card.addEventListener('click', (e) => {
             const target = e.target;
             if (!target || typeof target.closest !== 'function') return;
+            const countryBtn = target.closest('[data-country-open]');
+            if (countryBtn) {
+                this.openCountryInfo(countryBtn.dataset.countryOpen);
+                return;
+            }
             const armyBtn = target.closest('[data-army-select]');
             if (armyBtn) {
                 this.game.selectArmy(Number(armyBtn.dataset.armySelect));
@@ -1013,6 +1019,222 @@ const UI = {
         </div>`;
     },
 
+    // ----- 国家速览 / 快速外交 -----
+    /**
+     * 地图上点选国家（或省份卡「国家」按钮）时弹出的速览：
+     * 基本信息 + 宣战 / 议和 / 改善关系 / 邀请入盟 / 租借等快捷操作。
+     * 所有操作仍走 Game.command，按钮禁用态与命令校验同源。
+     */
+    bindCountryInfo() {
+        const root = document.getElementById('countryInfo');
+        if (!root) return;
+        root.addEventListener('click', (e) => {
+            const target = e.target;
+            if (target === root) { this.closeCountryInfo(); return; }
+            if (!target || typeof target.closest !== 'function') return;
+            if (target.closest('[data-ci-close]')) { this.closeCountryInfo(); return; }
+            const btn = target.closest('[data-ci-action]');
+            if (btn && !btn.disabled) this.countryAction(btn.dataset.ciAction);
+        });
+    },
+
+    openCountryInfo(tag) {
+        if (!this.game || !this.game.state || !tag) return;
+        if (!this.game.countryById(tag)) return;
+        this._countryInfoTag = tag;
+        this.renderCountryInfo();
+        document.getElementById('countryInfo').classList.remove('hidden');
+    },
+
+    closeCountryInfo() {
+        this._countryInfoTag = null;
+        const el = document.getElementById('countryInfo');
+        if (el) el.classList.add('hidden');
+    },
+
+    renderCountryInfo() {
+        const panel = document.getElementById('countryInfoPanel');
+        const tag = this._countryInfoTag;
+        if (!panel || !tag) return;
+        const g = this.game;
+        const c = g.countryById(tag);
+        if (!c) { this.closeCountryInfo(); return; }
+
+        const me = g.playerTag;
+        const isSelf = tag === me;
+        const ideo = IDEOLOGY[c.ideology] || { icon: '○', name: '中立' };
+        const my = g.playerCountry() || {};
+        const rel = Math.round(my.relations?.[tag] ?? 0);
+        const relCls = rel >= 50 ? 'pos' : (rel <= -50 ? 'neg' : '');
+        const relLabel = rel >= 50 ? '亲密' : (rel >= 20 ? '友好'
+            : (rel <= -50 ? '敌视' : (rel <= -20 ? '冷淡' : '中立')));
+
+        const facId = g.factionOf(tag);
+        const fac = facId ? g.factionById(facId) : null;
+        const FAC_LABEL = { axis: '轴心', league: '同盟' };
+        const facLabel = fac
+            ? (this.tt(fac.name) !== fac.name ? this.tt(fac.name) : (FAC_LABEL[fac.id] || fac.id))
+            : '';
+        const facText = fac
+            ? `${facLabel}${g.factionLeader(facId) === tag ? '（领袖）' : ''}`
+            : '无阵营';
+        const leaderName = c.leader
+            ? (this.tt(c.leader) !== c.leader ? this.tt(c.leader) : c.leader)
+            : '';
+
+        const wars = g.warsOf(me);
+        const conflict = wars.find((w) => {
+            const a = w.alliesA || [w.a];
+            const b = w.alliesB || [w.b];
+            return (a.includes(me) && b.includes(tag)) || (b.includes(me) && a.includes(tag));
+        });
+        const directWar = wars.find((w) => (w.a === me && w.b === tag) || (w.a === tag && w.b === me));
+        const atWar = !!conflict;
+        const warScore = directWar
+            ? Math.round((directWar.alliesA || [directWar.a]).includes(me)
+                ? (directWar.scoreA || 0) : (directWar.scoreB || 0))
+            : null;
+
+        const capital = c.capital != null ? g.provinceById(c.capital) : null;
+        const provinces = g.provincesOf(tag).length;
+        const armies = g.armiesOf(tag);
+        const air = g.airForcesOf(tag);
+        const fleets = g.fleetsOf(tag);
+        const strength = Math.round(armies.reduce((s, a) => s + (a.strength || 0), 0));
+        const planes = Math.round(air.reduce((s, a) => s + (a.planes || 0), 0));
+        const ships = Math.round(fleets.reduce((s, f) => s + (f.ships || 0), 0));
+        const num = (v) => Math.round(v || 0).toLocaleString('zh-CN');
+        const pct = (v) => `${Math.round(this.fp(v) * 100)}%`;
+        const stat = (label, value) =>
+            `<div class="ci-stat"><div class="cs-label">${label}</div><div class="cs-value">${value}</div></div>`;
+
+        const res = Object.entries(c.resources || {})
+            .filter(([, v]) => (v || 0) > 0)
+            .map(([k, v]) => {
+                const d = RESOURCES[k] || { name: k, icon: '•' };
+                return `<span>${d.icon} ${d.name} ${num(v)}</span>`;
+            }).join('');
+
+        let actions;
+        if (isSelf) {
+            actions = '<div class="ci-note">这是你领导的国家。地图上点击其他国家可查看外交选项。</div>';
+        } else {
+            const warBlocked = atWar
+                ? { err: '已处于战争状态' }
+                : g.canCommand({ t: 'declareWar', from: me, to: tag, justification: '玩家宣战' });
+            const peaceBlocked = directWar
+                ? g.canCommand({ t: 'makePeace', from: me, to: tag })
+                : { err: '两国之间没有直接战争' };
+            const relBlocked = g.canCommand({ t: 'improveRelations', from: me, to: tag, amount: 10 });
+
+            const myFacId = g.factionOf(me);
+            const iLead = !!myFacId && g.factionLeader(myFacId) === me;
+            const inviteBlocked = (iLead && !facId)
+                ? g.canCommand({ t: 'inviteFaction', from: me, to: tag, faction: myFacId })
+                : { err: facId ? '该国已加入阵营' : '只有阵营领袖可以邀请' };
+            const lendBlocked = ((myFacId && myFacId === facId) || rel >= 50)
+                ? g.canCommand({ t: 'lendLease', country: me, to: tag, amount: 10, resource: 'supplies' })
+                : { err: '只有阵营盟友或关系 ≥ 50 的国家才能租借' };
+
+            const btn = (action, label, blocked) => {
+                const tip = blocked ? ` title="${String(blocked.err || '').replace(/"/g, '&quot;')}"` : '';
+                return `<button class="btn-action" data-ci-action="${action}"
+                    ${blocked ? 'disabled' : ''}${tip}>${label}</button>`;
+            };
+            actions = [
+                btn('war', '宣战', warBlocked),
+                btn('peace', '议和', peaceBlocked),
+                btn('relation', '改善关系 +10', relBlocked),
+                (iLead && !facId) ? btn('invite', '邀请入盟', inviteBlocked) : '',
+                ((myFacId && myFacId === facId) || rel >= 50) ? btn('lend', '租借 10 补给', lendBlocked) : '',
+                btn('panel', '打开外交面板', null),
+            ].join('');
+            const pending = myFacId && g.factionInvites().some((i) => i.faction === myFacId && i.to === tag);
+            if (pending) actions += '<div class="ci-note">已向该国发出阵营邀请，等待回应。</div>';
+        }
+
+        const status = isSelf
+            ? '<span class="ci-rel">你正在领导这个国家</span><span class="ci-war">本国</span>'
+            : `<span class="ci-rel ${relCls}">对我国关系 <b>${rel > 0 ? '+' : ''}${rel}</b> · ${relLabel}</span>
+                <span class="ci-war ${atWar ? 'neg' : ''}">${atWar
+                    ? `交战中${warScore != null ? ` · 战争分数 ${warScore}` : ''}` : '和平'}</span>`;
+
+        panel.innerHTML = `
+            <div class="ci-head">
+                <div class="ci-flag" style="border-color:${c.color || 'var(--border)'}">${c.flag || '🏳'}</div>
+                <div class="ci-title">
+                    <h3 id="countryInfoName">${this.ownerLabel(tag)}</h3>
+                    <div class="ci-sub">${tag} · ${ideo.icon} ${ideo.name} · ${c.rulingParty || '—'}${leaderName ? ` · ${leaderName}` : ''}</div>
+                </div>
+                <button class="ci-close" data-ci-close title="关闭" aria-label="关闭">✕</button>
+            </div>
+            <div class="ci-body">
+                <div class="ci-status">${status}</div>
+                <div class="ci-grid">
+                    ${stat('首都', capital ? capital.name : '—')}
+                    ${stat('阵营', facText)}
+                    ${stat('控制省份', num(provinces))}
+                    ${stat('人口', num(c.population))}
+                    ${stat('人力', num(c.manpower))}
+                    ${stat('政治点数', num(c.politicalPower))}
+                    ${stat('稳定度', pct(c.stability))}
+                    ${stat('战争支持', pct(c.warSupport))}
+                    ${stat('工厂', `${num(c.civs)} 民 / ${num(c.mils)} 军 / ${num(c.docks)} 船坞`)}
+                    ${stat('陆军', `${armies.length} 支 · ${num(strength)} 兵力`)}
+                    ${stat('空军', `${air.length} 群 · ${num(planes)} 架`)}
+                    ${stat('海军', `${fleets.length} 支 · ${num(ships)} 艘`)}
+                </div>
+                ${res ? `<div class="ci-resources">${res}</div>` : ''}
+            </div>
+            <div class="ci-actions">${actions}</div>
+        `;
+    },
+
+    countryAction(action) {
+        const tag = this._countryInfoTag;
+        const me = this.game?.playerTag;
+        if (!tag || !me || tag === me) return;
+        if (action === 'panel') {
+            this.closeCountryInfo();
+            this.openPanel('diplomacy');
+            return;
+        }
+
+        let cmd = null;
+        let okText = '';
+        const name = this.ownerLabel(tag);
+        if (action === 'war') {
+            cmd = { t: 'declareWar', from: me, to: tag, justification: '玩家宣战' };
+            okText = `已向 ${name} 宣战`;
+        } else if (action === 'peace') {
+            cmd = { t: 'makePeace', from: me, to: tag };
+            okText = `已与 ${name} 停战`;
+        } else if (action === 'relation') {
+            cmd = { t: 'improveRelations', from: me, to: tag, amount: 10 };
+            okText = `与 ${name} 的关系 +10`;
+        } else if (action === 'invite') {
+            const faction = this.game.factionOf(me);
+            if (!faction) return;
+            cmd = { t: 'inviteFaction', from: me, to: tag, faction };
+            okText = `已邀请 ${name} 加入阵营`;
+        } else if (action === 'lend') {
+            cmd = { t: 'lendLease', country: me, to: tag, amount: 10, resource: 'supplies' };
+            okText = `已向 ${name} 租借 10 补给`;
+        }
+        if (!cmd) return;
+
+        const r = this.game.command(cmd);
+        if (!r.ok) {
+            this.toast(r.err || '操作失败');
+            this.renderCountryInfo();
+            return;
+        }
+        this.toast(okText);
+        this.refreshAll();
+        this.renderCountryInfo();
+        if (typeof MapView !== 'undefined' && MapView.requestDraw) MapView.requestDraw();
+    },
+
     // ----- 外交 -----
     renderDiplomacy() {
         const tag = this.game.playerTag;
@@ -1432,7 +1654,11 @@ const UI = {
         card.innerHTML = `
             <div class="pc-head">
                 <span class="pc-name">${prov.name}</span>
-                <button class="pc-close" data-province-close title="关闭">✕</button>
+                <div class="pc-head-actions">
+                    ${prov.controller ? `<button class="pc-btn" data-country-open="${prov.controller}"
+                        title="查看国家速览与外交操作">国家</button>` : ''}
+                    <button class="pc-close" data-province-close title="关闭">✕</button>
+                </div>
             </div>
             <div class="pc-sub"><span class="pc-owner">${this.ownerLabel(prov.controller)}</span>
                 · ${terrain}${prov.coastal ? ' · 沿海' : ''} · 供给 ${supplyText}${prov.damage ? ` · 受损 ${Math.round(prov.damage)}` : ''}</div>

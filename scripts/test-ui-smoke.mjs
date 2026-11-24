@@ -390,7 +390,36 @@ section('5. 空军、海军、外交与战争面板');
 }
 
 // ============================================================
-section('6. 国家选择：区域筛选与搜索');
+section('6. 国家速览与快速外交');
+{
+    Game.startWith('GER');
+    UI.openCountryInfo('POL');
+    const root = documentStub.getElementById('countryInfo');
+    const panel = documentStub.getElementById('countryInfoPanel');
+    assert(!root.classList.contains('hidden'), '国家速览弹窗打开');
+    assert(panel.innerHTML.includes('波兰'), '弹窗显示国家名称');
+    assert(panel.innerHTML.includes('宣战') && panel.innerHTML.includes('议和') &&
+        panel.innerHTML.includes('改善关系'), '弹窗包含快捷外交操作');
+    assert(panel.innerHTML.includes('人口') && panel.innerHTML.includes('陆军'), '弹窗包含基本信息');
+
+    const before = Game.playerCountry().relations.POL || 0;
+    UI.countryAction('relation');
+    assertEqual(Game.playerCountry().relations.POL, before + 10, '改善关系 +10 生效');
+
+    UI.countryAction('war');
+    assert(Game.areAtWar('GER', 'POL'), '宣战命令生效');
+    UI.renderCountryInfo();
+    assert(panel.innerHTML.includes('交战中'), '弹窗显示交战状态');
+
+    UI.countryAction('peace');
+    assert(!Game.areAtWar('GER', 'POL'), '议和命令生效');
+
+    UI.closeCountryInfo();
+    assert(root.classList.contains('hidden'), '国家速览弹窗关闭');
+}
+
+// ============================================================
+section('7. 国家选择：区域筛选与搜索');
 {
     // renderCountryList 需要 campaign.scenario；用已加载的 Game.campaign
     App.renderCountryList(Game.campaign);

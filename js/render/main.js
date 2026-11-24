@@ -53,12 +53,17 @@ const App = {
             if (!Game.campaign) return;
             if (!document.getElementById('gameScreen').classList.contains('active')) return;
 
+            const ci = document.getElementById('countryInfo');
+            const countryInfoOpen = ci && !ci.classList.contains('hidden');
             if (e.key === 'Escape') {
+                if (countryInfoOpen) { UI.closeCountryInfo(); return; }
                 const pm = document.getElementById('panelModal');
                 if (pm && !pm.classList.contains('hidden')) { UI.closePanel(); return; }
                 Game.clearArmySelection();
                 return;
             }
+            // 国家速览是模态层：打开期间不响应空格 / 数字面板快捷键
+            if (countryInfoOpen) return;
             if (e.key === ' ') {
                 e.preventDefault();
                 Game.speed = Game.speed > 0 ? 0 : 3;

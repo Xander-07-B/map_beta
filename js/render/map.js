@@ -1926,8 +1926,19 @@ const MapView = {
             return;
         }
 
-        // 国家级 LOD 下省份未显示，不选中隐藏的省份
-        if (this.scale < this.LOD_COUNTRY) return;
+        // 国家级 LOD：点击国家打开速览 / 快速外交；省份尚未显示，不选中隐藏的省份
+        if (this.scale < this.LOD_COUNTRY) {
+            const world = this.screenToWorld(pos.x, pos.y);
+            const iso = this.findCountryAt(world.x, world.y);
+            if (iso) {
+                // 除 GER 外，战役 tag 与地图 ISO3 相同；与 ownerOf 使用同一换算
+                const tag = this.game.countryIdByIso3(iso) || iso;
+                if (this.game.countryById(tag) && typeof UI !== 'undefined' && UI) {
+                    UI.openCountryInfo(tag);
+                }
+            }
+            return;
+        }
 
         const world = this.screenToWorld(pos.x, pos.y);
         const prov = this.findProvinceAt(world.x, world.y);

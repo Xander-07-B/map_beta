@@ -7,14 +7,17 @@
 // 早期版本还写了 nameEn / iso / type / bbox 和重复的 id，占索引体积一半以上，
 // 浏览器解析后却没人用；删掉后 index.json 从 1.3 MB 降到约 0.5 MB。
 //
-// 海域省份（由 build-sea.mjs 生成、build-provinces 并入）在陆地 GeoJSON 中无属性，
-// 这里按 sea-adj.json 的键识别，标记 sea:true、owner:null，并补入海域-陆地邻接
-// （海域与陆地几何不共享弧段，弧段邻接表无法给出这层关系）。
+// 海域省份（由 build-sea.mjs 生成、build-provinces 裁剪并按连通性拆分）在
+// 陆地 GeoJSON 中无属性，这里按 sea-ids.json 识别，标记 sea:true、owner:null。
+// 海域-海域邻接来自裁剪后的共享弧段；海域-陆地邻接另由 build-sea 的网格
+// 邻接补入（沿岸格子常整格被判为陆地，海域边界会停在离岸约一格处，与陆地
+// 多边形并不共享弧段）。
 import { readFileSync, writeFileSync } from "node:fs";
 import * as topojson from "topojson-client";
 
 const topo = JSON.parse(readFileSync("data/provinces.l1.topo.json", "utf8"));
 const raw = JSON.parse(readFileSync("data/ne_10m_admin_1_states_provinces.geojson", "utf8"));
+const seaIds = new Set(JSON.parse(readFileSync("data/sea-ids.json", "utf8")).map(Number));
 const seaAdj = JSON.parse(readFileSync("data/sea-adj.json", "utf8"));
 
 // 原始属性表：ne_id -> properties（TopoJSON 几何 id 与之一一对应）
@@ -23,9 +26,6 @@ for (const f of raw.features) {
     const p = f.properties || {};
     if (p.ne_id != null) propsById.set(+p.ne_id, p);
 }
-
-// 海域省份 id 集合（来自 sea-adj.json）
-const seaIds = new Set(Object.keys(seaAdj.seaLand).map(Number));
 
 // mapshaper 以输入文件名作为对象名，这里取第一个 GeometryCollection
 const objName = Object.keys(topo.objects).find(k => topo.objects[k].type === "GeometryCollection");
@@ -84,24 +84,21 @@ geoms.forEach((g) => {
     };
 });
 
-// ④ 补入海域-陆地、海域-海域邻接（来自 build-sea 的网格级计算；
-//    裁剪后弧段邻接已能给出大部分关系，这里补上跨格的对角邻接并去重）
+// ④ 补入海域-陆地邻接（网格级；裁剪后弧段邻接无法覆盖「海面与海岸之间
+//    隔着一格」的情况）。拆分出来的新海域 id 不在此表中，它们与陆地的
+//    关系仍由弧段邻接给出。
 const geomIds = new Set(geoms.map((g) => +g.id));
-function mergeAdj(map) {
-    for (const [a, bs] of Object.entries(map)) {
-        const aid = Number(a);
-        if (!geomIds.has(aid)) continue; // 裁剪后可能已被完全抹掉的极小海域
-        if (!neighbors[aid]) neighbors[aid] = [];
-        for (const bid of bs) {
-            if (!geomIds.has(bid)) continue;
-            if (!neighbors[aid].includes(bid)) neighbors[aid].push(bid);
-            if (!neighbors[bid]) neighbors[bid] = [];
-            if (!neighbors[bid].includes(aid)) neighbors[bid].push(aid);
-        }
+for (const [a, bs] of Object.entries(seaAdj.seaLand || {})) {
+    const aid = Number(a);
+    if (!geomIds.has(aid)) continue;
+    if (!neighbors[aid]) neighbors[aid] = [];
+    for (const bid of bs) {
+        if (!geomIds.has(bid)) continue;
+        if (!neighbors[aid].includes(bid)) neighbors[aid].push(bid);
+        if (!neighbors[bid]) neighbors[bid] = [];
+        if (!neighbors[bid].includes(aid)) neighbors[bid].push(aid);
     }
 }
-mergeAdj(seaAdj.seaLand);
-mergeAdj(seaAdj.seaAdj || {});
 
 writeFileSync("data/index.json", JSON.stringify({ neighbors, meta }));
 console.log(`provinces=${geoms.length}, edges=${adj.flat().length / 2}, missingProps=${missingProps}, coastal=${coastalCount}, sea=${seaIds.size}`);

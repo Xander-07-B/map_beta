@@ -3,25 +3,37 @@
 //
 // 背景：原地图只有陆地省份（Natural Earth admin-1），没有任何海域省份，
 // 舰队因此只能停在沿海陆地省份上——即「海军在陆地上行动」。本脚本：
-//   1. 用 d3.geoMercator 把世界投影到网格，按国家多边形判定陆/海
-//   2. 把海洋划分为若干海域省份（播种式区域生长，每块至多 MAX_CELLS 格）
+//   1. 用 d3.geoMercator 把世界投影到网格。陆地掩码同时使用 10m admin-1
+//      （与后续裁剪海域所用数据一致）和 50m 国家多边形（补足 admin-1 未
+//      覆盖的陆地）。旧版只用 50m 国家多边形，而裁剪用 10m admin-1：掩码
+//      认为是海的地方（小岛、细半岛在 50m 数据里被简化掉）裁剪时却被挖掉，
+//      同一个海域省份就被陆地切成互不相连的几块。
+//   2. 把海洋划分为若干海域省份（多源 BFS / 格网 Voronoi，约 SEED_SPACING 格一个省）
 //   3. 每个海域省份用矩形合并生成 MultiPolygon（经纬度坐标）
-//   4. 计算海域-海域、海域-陆地的邻接（网格级；陆地裁剪后虽会共享弧段，
-//      但跨格的对角邻接仍只有栅格能给出）
+//   4. 输出网格级「海域-陆地」邻接。海域只在格心落水时生成，沿岸格子常常
+//      整格被算作陆地，裁剪后的海域边界会停在离海岸一格左右的位置，与陆地
+//      几何并不共享弧段；若只靠 TopoJSON 弧段，很多沿海省份会失去海域邻接，
+//      舰队可以部署却无海可去。海域-海域邻接仍由 build-index 从裁剪后的
+//      共享弧段计算（同一条网格边，几何一致）。
 // 输出：
 //   data/sea.geojson     海域省份 GeoJSON（ne_id = 海域 id，供 build-provinces 并入 TopoJSON）
-//   data/sea-adj.json    { seaLand: { seaId: [陆地省份id...] } }（供 build-index 补邻接）
+//   data/sea-adj.json    { seaLand: { seaId: [陆地省份 id...] } }（供 build-index 补邻接）
 import { readFileSync, writeFileSync } from "node:fs";
 import { geoMercator } from "d3-geo";
 
-const COUNTRIES_PATH = "data/ne_50m_admin_0_countries.geojson";
-const PROVINCES_PATH = "data/ne_10m_admin_1_states_provinces.geojson";
+// 裁剪海域用的是 admin-1（见 build-provinces），掩码必须用同一份数据；
+// 50m 国家多边形作为兜底，避免 admin-1 未覆盖到的陆地被当成海。
+const LAND_SOURCES = [
+    "data/ne_10m_admin_1_states_provinces.geojson",
+    "data/ne_50m_admin_0_countries.geojson",
+];
 const SEA_GEO_PATH = "data/sea.geojson";
 const SEA_ADJ_PATH = "data/sea-adj.json";
 
-const COLS = 500, ROWS = 250;          // 网格分辨率（更高分辨率以更好贴合海岸线）
-const MAX_CELLS = 600;                  // 单个海域省份最多包含的网格数
-const SEA_ID_BASE = 900000001;         // 海域省份 id 起点（避开陆地 ne_id 区间）
+const COLS = 1000, ROWS = 500;          // 网格分辨率（约 40×80 km，更贴合海岸线）
+const SEED_SPACING = 32;                // 海域种子间距（格），决定省份大小（约 1000 格/省）
+const MIN_ISOLATED_CELLS = 20;          // 无种子的封闭水域小于此格数则不单独成省（小湖汊）
+const SEA_ID_BASE = 900000001;          // 海域省份 id 起点（避开陆地 ne_id 区间）
 
 // ---------- 投影 ----------
 const proj = geoMercator().fitSize([4096, 2048], { type: "Sphere" });
@@ -37,10 +49,6 @@ const cellH = (wy1 - wy0) / ROWS;
 /** 网格中心（投影坐标） */
 function cellCenter(r, c) {
     return [wx0 + (c + 0.5) * cellW, wy0 + (r + 0.5) * cellH];
-}
-/** 网格左上角（投影坐标） */
-function cellOrigin(r, c) {
-    return [wx0 + c * cellW, wy0 + r * cellH];
 }
 
 // ---------- 点在多边形内（射线法，支持环/孔） ----------
@@ -64,7 +72,6 @@ function pointInPolygon(px, py, poly) {
     return true;
 }
 function pointInFeature(px, py, feature) {
-    // feature 为投影后的 { type, coords }
     const coords = feature.coords;
     if (!coords) return false;
     if (feature.type === "Polygon") return pointInPolygon(px, py, coords);
@@ -85,30 +92,43 @@ function projectFeature(feature) {
     if (g.type === "MultiPolygon") return { type: "MultiPolygon", coords: g.coordinates.map((poly) => poly.map(projectRing)) };
     return null;
 }
-
-// ---------- 读数据 ----------
-const countries = JSON.parse(readFileSync(COUNTRIES_PATH, "utf8"));
-const provinces = JSON.parse(readFileSync(PROVINCES_PATH, "utf8"));
-
-const countryFeats = countries.features.map(projectFeature).filter(Boolean);
-const provFeats = provinces.features.map((f) => ({ id: f.properties.ne_id, geom: projectFeature(f) })).filter((f) => f.geom);
-
-// 国家 bbox 索引（加速陆海判定）
-const countryBboxes = countryFeats.map((f) => {
+function featureBbox(f) {
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    const coords = f.type === "Polygon" ? [f.coords] : f.coords;
-    for (const poly of coords) for (const ring of poly) for (const p of ring) {
+    const polys = f.type === "Polygon" ? [f.coords] : f.coords;
+    for (const poly of polys) for (const ring of poly) for (const p of ring) {
         if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0];
         if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1];
     }
     return { x0, y0, x1, y1, geom: f };
-});
+}
 
-// ---------- ① 陆海掩码 ----------
-// 填充法：遍历每个国家，把其投影多边形覆盖的网格标为陆地。
-// 比「逐格对所有国家求点是否在内」快一个量级，可支撑更高分辨率以贴合海岸线。
-const land = new Uint8Array(COLS * ROWS);   // 1=陆 0=海
-for (const b of countryBboxes) {
+// ---------- 读数据 ----------
+const t0 = Date.now();
+const adminData = JSON.parse(readFileSync(LAND_SOURCES[0], "utf8"));
+const countryData = JSON.parse(readFileSync(LAND_SOURCES[1], "utf8"));
+
+// admin-1 省份：既用于掩码（与裁剪数据一致），也用于海-陆邻接
+const provFeats = [];
+for (const f of adminData.features) {
+    const g = projectFeature(f);
+    if (g) provFeats.push({ ...featureBbox(g), id: Number(f.properties?.ne_id) || 0 });
+}
+// 国家多边形：只补足 admin-1 未覆盖的陆地
+const countryFeats = [];
+for (const f of countryData.features) {
+    const g = projectFeature(f);
+    if (g) countryFeats.push(featureBbox(g));
+}
+console.log(`[sea] projected ${provFeats.length} admin-1 + ${countryFeats.length} country features (${Date.now() - t0} ms)`);
+
+// ---------- ① 陆海掩码 + 陆地格归属 ----------
+// 遍历每块陆地多边形，把其投影多边形覆盖的网格标为陆地。
+// 网格同时记录所在 admin-1 省份，供后面计算「海域-陆地」邻接。
+// 国家多边形只补 admin-1 未覆盖到的陆地。
+const land = new Uint8Array(COLS * ROWS);        // 1=陆 0=海
+const provGrid = new Int32Array(COLS * ROWS);    // 0=海/未知，>0=陆地省份 ne_id
+
+function eachRasterCell(b, fn) {
     const c0 = Math.max(0, Math.floor((b.x0 - wx0) / cellW));
     const c1 = Math.min(COLS - 1, Math.ceil((b.x1 - wx0) / cellW));
     const r0 = Math.max(0, Math.floor((b.y0 - wy0) / cellH));
@@ -116,87 +136,128 @@ for (const b of countryBboxes) {
     for (let r = r0; r <= r1; r++) {
         for (let c = c0; c <= c1; c++) {
             const idx = r * COLS + c;
-            if (land[idx]) continue; // 已是陆地
             const [px, py] = cellCenter(r, c);
-            if (pointInFeature(px, py, b.geom)) land[idx] = 1;
+            fn(idx, px, py);
         }
     }
 }
 
-// ---------- ② 省一级栅格（用于海域-陆地邻接） ----------
-const provGrid = new Int32Array(COLS * ROWS).fill(0);  // 0=海/未知，>0=省份 ne_id
-for (const pf of provFeats) {
-    const g = pf.geom;
-    const polys = g.type === "Polygon" ? [g.coords] : g.coords;
-    // 计算投影 bbox
-    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
-    for (const poly of polys) for (const ring of poly) for (const p of ring) {
-        if (p[0] < x0) x0 = p[0]; if (p[0] > x1) x1 = p[0];
-        if (p[1] < y0) y0 = p[1]; if (p[1] > y1) y1 = p[1];
-    }
-    const c0 = Math.max(0, Math.floor((x0 - wx0) / cellW));
-    const c1 = Math.min(COLS - 1, Math.ceil((x1 - wx0) / cellW));
-    const r0 = Math.max(0, Math.floor((y0 - wy0) / cellH));
-    const r1 = Math.min(ROWS - 1, Math.ceil((y1 - wy0) / cellH));
-    for (let r = r0; r <= r1; r++) {
-        for (let c = c0; c <= c1; c++) {
-            const idx = r * COLS + c;
-            if (provGrid[idx] !== 0) continue; // 已有归属（先到先得，省份不重叠）
-            const [px, py] = cellCenter(r, c);
-            let inside = false;
-            for (const poly of polys) {
-                if (pointInPolygon(px, py, poly)) { inside = true; break; }
-            }
-            if (inside) provGrid[idx] = pf.id;
-        }
-    }
+for (const b of countryFeats) {
+    eachRasterCell(b, (idx, px, py) => {
+        if (!land[idx] && pointInFeature(px, py, b.geom)) land[idx] = 1;
+    });
 }
+for (const b of provFeats) {
+    if (!b.id) continue;
+    eachRasterCell(b, (idx, px, py) => {
+        if (provGrid[idx]) return; // 先到先得（admin-1 互不重叠）
+        if (pointInFeature(px, py, b.geom)) {
+            provGrid[idx] = b.id;
+            land[idx] = 1;
+        }
+    });
+}
+console.log(`[sea] rasterized land mask (${Date.now() - t0} ms)`);
 
-// ---------- ③ 划分海域省份 ----------
-// 播种式区域生长：每个海域省份从一个尚未分配的海洋格出发，按广度优先向外
-// 铺开最多 MAX_CELLS 格，再换下一个种子。
+// ---------- ② 划分海域省份 ----------
+// 多源 BFS（格网上的 Voronoi 划分）：按约 SEED_SPACING 格的间距在海洋里撒
+// 种子（相邻行错半格，近似六边形排布），所有种子同时向外扩张，每个海洋格
+// 归给最先到达它的种子。
 //
-// 旧实现是把整个海洋连通块按 BFS 顺序切成 1000 格一段，切片会沿着海岸线
-// 一路拉长成「从上到下的一条」，悬停时轮廓横贯整张地图，还会在海岸线处
-// 压住国家底色。改为紧凑生长后，海域省份近似圆形，尺寸也可控。
+// 旧实现是「逐个种子长大、长满固定格数就换下一个」，会在交界处留下大量
+// 1~2 格的芝麻海域：实测 1000×500 网格下 770 个「省份」里有一半只有 1~5 格。
+// 多源 BFS 一次铺满整个海洋，没有生长边界，也就不会留下空洞；每个格子都由
+// 一条水路连到自己的种子，所以每个省份在格网上天然 4 连通。
+//
+// 之后仍会用 admin-1 陆地裁剪，并拆分裁出来的残余碎片（见 build-provinces），
+// 保证最终每个海域省份都是一整片互不相连的水域。
 const seaProv = new Int32Array(COLS * ROWS).fill(0);  // 0=非海，>0=海域省份序号（1 起）
-const seaProvinces = [];
 const dirs = [[0, 1], [1, 0], [0, -1], [-1, 0]];
-const claimed = new Uint8Array(COLS * ROWS);          // 已被某个海域省份占用
-const enqueued = new Int32Array(COLS * ROWS).fill(0); // 当前种子轮次内已入队
-
-// 所有海洋格按行优先顺序作为候选种子；已被其他省份占用的跳过。
 const oceanCells = [];
 for (let i = 0; i < COLS * ROWS; i++) if (!land[i]) oceanCells.push(i);
 
-let seaSeq = 0;
+// 撒种子：奇数行偏移半格，避免所有省份排成方块
+const seedIdx = [];
+for (let r = (SEED_SPACING >> 1); r < ROWS; r += SEED_SPACING) {
+    const offset = ((r / SEED_SPACING) | 0) % 2 ? (SEED_SPACING >> 1) : 0;
+    for (let c = offset; c < COLS; c += SEED_SPACING) {
+        const idx = r * COLS + c;
+        if (!land[idx]) seedIdx.push(idx);
+    }
+}
+
+// 所有种子同时向外扩张
+const queue = [];
+seedIdx.forEach((idx, i) => {
+    seaProv[idx] = i + 1;
+    queue.push(idx);
+});
+let head = 0;
+while (head < queue.length) {
+    const idx = queue[head++];
+    const label = seaProv[idx];
+    const r = (idx / COLS) | 0, c = idx % COLS;
+    for (const [dr, dc] of dirs) {
+        const nr = r + dr, nc = c + dc;
+        if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
+        const nidx = nr * COLS + nc;
+        if (land[nidx] || seaProv[nidx] !== 0) continue;
+        seaProv[nidx] = label;
+        queue.push(nidx);
+    }
+}
+
+// 没有种子的封闭水域（内陆湖、峡湾深处等）：整块独立成一省
+let seaSeq = seedIdx.length;
+let isolatedPockets = 0;
 for (const start of oceanCells) {
-    if (claimed[start]) continue;
+    if (seaProv[start] !== 0) continue;
     seaSeq++;
-    const seq = seaSeq;
-    const cells = [];
-    const queue = [start];
-    enqueued[start] = seq;
-    let head = 0;
-    while (head < queue.length && cells.length < MAX_CELLS) {
-        const idx = queue[head++];
-        claimed[idx] = 1;
-        seaProv[idx] = seq;
-        cells.push(idx);
+    isolatedPockets++;
+    seaProv[start] = seaSeq;
+    const queue2 = [start];
+    let h2 = 0;
+    while (h2 < queue2.length) {
+        const idx = queue2[h2++];
         const r = (idx / COLS) | 0, c = idx % COLS;
         for (const [dr, dc] of dirs) {
             const nr = r + dr, nc = c + dc;
             if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
             const nidx = nr * COLS + nc;
-            if (land[nidx] || claimed[nidx] || enqueued[nidx] === seq) continue;
-            enqueued[nidx] = seq;
-            queue.push(nidx);
+            if (land[nidx] || seaProv[nidx] !== 0) continue;
+            seaProv[nidx] = seaSeq;
+            queue2.push(nidx);
         }
     }
-    seaProvinces.push({ id: SEA_ID_BASE + seq - 1, cells });
 }
 
-// ---------- ④ 矩形合并生成海域多边形 ----------
+// 按省份序号归集网格（序号从 1 开始且连续）
+const seaProvinces = [];
+for (let i = 0; i < COLS * ROWS; i++) {
+    const label = seaProv[i];
+    if (!label) continue;
+    const sp = seaProvinces[label - 1] || (seaProvinces[label - 1] = { id: SEA_ID_BASE + label - 1, cells: [] });
+    sp.cells.push(i);
+}
+
+// 没有种子的封闭水域里，大块（地中海、黑海、里海、红海等）仍值得保留为
+// 独立海域；几十个格子以下的湖汊不值得各占一个省份 id（省份视图里只是
+// 无法点选的小点），直接舍弃，让底图的海洋颜色作为空白水面。
+const keptProvinces = seaProvinces.filter(
+    (p, i) => i < seedIdx.length || p.cells.length >= MIN_ISOLATED_CELLS
+);
+const droppedPockets = seaProvinces.length - keptProvinces.length;
+
+const sizeStats = keptProvinces.map((p) => p.cells.length).sort((a, b) => a - b);
+console.log(
+    `[sea] ${keptProvinces.length} provinces on ${COLS}x${ROWS} grid ` +
+    `(seeds=${seedIdx.length}, isolated=${isolatedPockets}, dropped small=${droppedPockets}); ` +
+    `size min=${sizeStats[0]} p50=${sizeStats[sizeStats.length >> 1]} ` +
+    `p90=${sizeStats[Math.floor(sizeStats.length * 0.9)]} max=${sizeStats[sizeStats.length - 1]} ` +
+    `(${Date.now() - t0} ms)`
+);
+
+// ---------- ③ 矩形合并生成海域多边形 ----------
 /** 把一组网格按行合并成矩形，再纵向合并，返回矩形列表 [{x0,y0,x1,y1}]（网格坐标） */
 function rectanglesOf(cells) {
     const byRow = new Map();
@@ -260,7 +321,7 @@ function rectToLonLatRing(rect) {
 }
 
 const seaFeatures = [];
-for (const sp of seaProvinces) {
+for (const sp of keptProvinces) {
     const rects = rectanglesOf(sp.cells);
     if (rects.length === 0) continue;
     const polygons = rects.map((rect) => [rectToLonLatRing(rect)]);
@@ -272,60 +333,40 @@ for (const sp of seaProvinces) {
     });
 }
 
-// ---------- ⑤ 邻接：海域-海域、海域-陆地 ----------
-// 海域-海域用 4 邻接（海域省份按 4 连通划分，邻接即共边）；
-// 海域-陆地用 8 邻接（含对角），以在粗网格下尽量捕获曲折海岸线的相邻关系。
-const dirs4 = [[0, 1], [1, 0], [0, -1], [-1, 0]];
+// ---------- ④ 海域-陆地邻接（网格级） ----------
+// 沿岸格子常常整格被判为陆地，海域多边形的边界会停在离海岸约一格处，
+// 与陆地多边形并不共享弧段。用网格 8 邻接补上这层关系，保证沿海省份
+// 都有可进入的海域。海域-海域不在这里处理：两侧都是海域格，共享同一条
+// 网格边，TopoJSON 弧段邻接已经能给出。
 const dirs8 = [[0, 1], [1, 0], [0, -1], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]];
-const seaLand = {};   // seaId -> Set<陆地省份id>
-for (const sp of seaProvinces) {
-    seaLand[sp.id] = new Set();
-}
-const seaAdj = {};    // seaId -> Set<seaId>
-for (const sp of seaProvinces) seaAdj[sp.id] = new Set();
-
+const keptSeaIds = new Set(seaFeatures.map((f) => Number(f.id)));
+const seaLand = {};
 for (let r = 0; r < ROWS; r++) {
     for (let c = 0; c < COLS; c++) {
-        const idx = r * COLS + c;
-        if (seaProv[idx] === 0) continue; // 非海域
-        const myId = SEA_ID_BASE + seaProv[idx] - 1;
-        for (const [dr, dc] of dirs4) {
-            const nr = r + dr, nc = c + dc;
-            if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
-            const nidx = nr * COLS + nc;
-            if (seaProv[nidx] !== 0) {
-                // 海域-海域（共边）
-                const nId = SEA_ID_BASE + seaProv[nidx] - 1;
-                if (nId !== myId) { seaAdj[myId].add(nId); seaAdj[nId].add(myId); }
-            }
-        }
+        const label = seaProv[r * COLS + c];
+        if (!label) continue;
+        const seaId = SEA_ID_BASE + label - 1;
+        if (!keptSeaIds.has(seaId)) continue;
         for (const [dr, dc] of dirs8) {
             const nr = r + dr, nc = c + dc;
             if (nr < 0 || nr >= ROWS || nc < 0 || nc >= COLS) continue;
-            const nidx = nr * COLS + nc;
-            if (provGrid[nidx] !== 0) {
-                // 海域-陆地（含对角）
-                seaLand[myId].add(provGrid[nidx]);
-            }
+            const pid = provGrid[nr * COLS + nc];
+            if (!pid) continue;
+            if (!seaLand[seaId]) seaLand[seaId] = new Set();
+            seaLand[seaId].add(pid);
         }
     }
 }
 
 // ---------- 输出 ----------
-const seaGeo = { type: "FeatureCollection", features: seaFeatures };
-writeFileSync(SEA_GEO_PATH, JSON.stringify(seaGeo));
-
-// 输出 data/sea-adj.json：{ seaLand: { seaId: [陆地省份id...] }, seaAdj: { seaId: [seaId...] } }
-// 海域-海域邻接也可由弧段邻接表给出，但 mapshaper 对海域矩形弧段合并不充分，
-// 这里一并输出网格级邻接，供 build-index 可靠补全。
-const seaAdjOut = {
+writeFileSync(SEA_GEO_PATH, JSON.stringify({ type: "FeatureCollection", features: seaFeatures }));
+writeFileSync(SEA_ADJ_PATH, JSON.stringify({
     seaLand: Object.fromEntries(Object.entries(seaLand).map(([k, v]) => [k, [...v]])),
-    seaAdj: Object.fromEntries(Object.entries(seaAdj).map(([k, v]) => [k, [...v]])),
-};
-writeFileSync(SEA_ADJ_PATH, JSON.stringify(seaAdjOut));
+}));
 
 console.log(
     `sea=${SEA_GEO_PATH} provinces=${seaFeatures.length} ` +
-    `cells=${seaProvinces.reduce((s, p) => s + p.cells.length, 0)} ` +
-    `seaLandEdges=${Object.values(seaLand).reduce((s, v) => s + v.size, 0)}`
+    `cells=${keptProvinces.reduce((s, p) => s + p.cells.length, 0)} ` +
+    `seaLandEdges=${Object.values(seaLand).reduce((s, v) => s + v.size, 0)} ` +
+    `elapsed=${Date.now() - t0} ms`
 );
